@@ -4,8 +4,6 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { Navbar } from "@/components/navbar";
 import { ConnectionCard } from "@/components/connection-card";
-import { EmailList } from "@/components/email-list";
-import { CalendarList } from "@/components/calendar-list";
 import { WhatsAppPanel } from "@/components/whatsapp-panel";
 import { AiPanel } from "@/components/ai-panel";
 import { AccountsPanel } from "@/components/accounts-panel";
@@ -45,15 +43,6 @@ export default async function DashboardPage() {
 
           <ConnectionCard title="Email accounts" icon="📧" connected={googleConnected}>
             <AccountsPanel />
-            {googleConnected && <div className="mt-4 pt-4 border-t border-slate-100"><EmailList /></div>}
-          </ConnectionCard>
-
-          <ConnectionCard title="Google Calendar" icon="📅" connected={googleConnected}>
-            {googleConnected ? (
-              <CalendarList />
-            ) : (
-              <p className="text-sm text-slate-500">Connect a Google account to access Calendar.</p>
-            )}
           </ConnectionCard>
 
           <ConnectionCard title="WhatsApp" icon="💬" connected={user.whatsappConnected}>

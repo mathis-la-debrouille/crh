@@ -431,7 +431,7 @@ export async function runAgentLoop({
                   })
                 );
                 type EmailWithAccount = { account: string; id: string; from: string; subject: string; date: string; snippet: string };
-                const all: EmailWithAccount[] = settled.flatMap((s, i) =>
+                const all: EmailWithAccount[] = settled.flatMap((s) =>
                   s.status === "fulfilled" ? s.value : []
                 );
                 result = all.sort((a, b) => (b.date ?? "") > (a.date ?? "") ? 1 : -1).slice(0, maxResults);

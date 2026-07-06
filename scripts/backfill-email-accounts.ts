@@ -7,10 +7,17 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaLibSql } from "@prisma/adapter-libsql";
 
 const url = process.env.DATABASE_URL ?? "file:./dev.db";
-const adapter = new PrismaBetterSqlite3({ url });
-const prisma = new PrismaClient({ adapter });
+const authToken = process.env.DATABASE_AUTH_TOKEN;
+
+function makeAdapter() {
+  if (url.startsWith("file:")) return new PrismaBetterSqlite3({ url });
+  return new PrismaLibSql({ url, authToken });
+}
+
+const prisma = new PrismaClient({ adapter: makeAdapter() });
 
 async function main() {
   const users = await prisma.$queryRaw<{
