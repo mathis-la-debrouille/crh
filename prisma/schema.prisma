@@ -57,7 +57,7 @@ model User {
 
 model AllowedNumber {
   id        String   @id @default(cuid())
-  phone     String   @unique  // E.164 format: +33782748020
+  phone     String   @unique  // E.164 format: +33612345678
   note      String?
   createdAt DateTime @default(now())
 }

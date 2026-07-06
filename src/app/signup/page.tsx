@@ -118,11 +118,11 @@ function SignupInner() {
             <form onSubmit={requestCode} className="space-y-4">
               <div className="space-y-1 text-left">
                 <p className="text-sm font-medium text-[#0f172a]">Enter your WhatsApp number</p>
-                <p className="text-xs text-slate-400">International format: +33 7 82 74 80 20</p>
+                <p className="text-xs text-slate-400">International format: +33 6 12 34 56 78</p>
               </div>
               <Input
                 type="tel"
-                placeholder="+33 7 82 74 80 20"
+                placeholder="+33 6 12 34 56 78"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 required

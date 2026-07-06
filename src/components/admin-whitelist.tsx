@@ -42,7 +42,7 @@ export function AdminWhitelist({ initialNumbers }: { initialNumbers: AllowedNumb
   return (
     <div className="space-y-4">
       <form onSubmit={add} className="flex gap-2">
-        <Input placeholder="+33 7 82 74 80 20" value={phone} onChange={(e) => setPhone(e.target.value)} required className="flex-1" />
+        <Input placeholder="+33 6 12 34 56 78" value={phone} onChange={(e) => setPhone(e.target.value)} required className="flex-1" />
         <Input placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} className="w-36" />
         <Button type="submit" size="sm" disabled={loading || !phone.trim()}>Add</Button>
       </form>
