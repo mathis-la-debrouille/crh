@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { signIn } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,15 @@ import { Input } from "@/components/ui/input";
 
 type Step = "phone" | "waiting" | "google";
 
-export const dynamic = "force-dynamic";
-
 export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupInner />
+    </Suspense>
+  );
+}
+
+function SignupInner() {
   const params = useSearchParams();
   const errorParam = params.get("error");
 
@@ -25,7 +31,6 @@ export default function SignupPage() {
         null
   );
 
-  // Polling ref
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -91,7 +96,6 @@ export default function SignupPage() {
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm space-y-5">
-          {/* Step indicators */}
           <div className="flex items-center justify-center gap-2 text-xs text-slate-400">
             {(["phone", "waiting", "google"] as Step[]).map((s, i) => (
               <div key={s} className="flex items-center gap-2">
@@ -137,18 +141,15 @@ export default function SignupPage() {
                 <p className="text-xs text-slate-400">Open WhatsApp and send the code below to our number.</p>
               </div>
 
-              {/* Code display */}
               <div className="rounded-xl bg-slate-50 py-5 text-center">
                 <p className="font-mono text-3xl font-bold tracking-widest text-[#0f172a] select-all">{vaytCode}</p>
               </div>
 
-              {/* Send-to */}
               <div className="rounded-lg border border-slate-200 px-4 py-3 text-left text-sm">
                 <p className="text-xs text-slate-400 mb-1">Send to this number</p>
                 <p className="font-mono font-semibold text-[#0f172a]">{waNumber}</p>
               </div>
 
-              {/* Waiting indicator */}
               <div className="flex items-center justify-center gap-2 text-sm text-slate-400">
                 <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-slate-300" />
                 Waiting for your WhatsApp message…
