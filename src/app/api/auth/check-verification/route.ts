@@ -10,7 +10,8 @@ export async function GET(req: NextRequest) {
 
   if (!status.verified) return NextResponse.json({ verified: false });
 
-  // Set the signup cookie and return success
+  console.log(`[signup] check-verification: verified phone=${normalised} — setting cookie`);
+
   const response = NextResponse.json({ verified: true });
   response.cookies.set("vayt-signup-token", status.sessionToken!, {
     httpOnly: true,

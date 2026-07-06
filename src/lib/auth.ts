@@ -31,11 +31,15 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user, account }) {
       if (!account || !user.email) return false;
 
+      console.log(`[signup] signIn: email=${user.email} provider=${account.provider}`);
+
       // Check if this user already has an active account (existing users / re-auth)
       const existing = await prisma.user.findUnique({
         where: { email: user.email },
         select: { id: true, status: true },
       });
+
+      console.log(`[signup] signIn: existing=${existing?.status ?? "none"}`);
 
       let phone: string | undefined;
       let status: "active" | "pending" = "pending";
@@ -43,10 +47,12 @@ export const authOptions: NextAuthOptions = {
       if (existing?.status === "active") {
         // Existing active user — just refresh tokens, no checks needed
         status = "active";
+        console.log(`[signup] signIn: existing active user — refreshing tokens email=${user.email}`);
       } else if (existing?.status === "pending") {
         // Check for valid OTP session cookie
         const cookieStore = await cookies();
         const signupToken = cookieStore.get("vayt-signup-token")?.value;
+        console.log(`[signup] signIn: pending user — cookie present=${!!signupToken}`);
         if (signupToken) {
           const otp = await prisma.otpCode.findUnique({
             where: { sessionToken: signupToken },
@@ -54,27 +60,36 @@ export const authOptions: NextAuthOptions = {
           if (otp && otp.used && otp.expiresAt > new Date()) {
             phone = otp.phone;
             status = "active";
+            console.log(`[signup] signIn: pending→active via OTP phone=${phone}`);
             // Consume the session token so it can't be reused
             await prisma.otpCode.update({ where: { id: otp.id }, data: { expiresAt: new Date() } });
+          } else {
+            console.warn(`[signup] signIn: OTP invalid or expired — otp.used=${otp?.used} expiresAt=${otp?.expiresAt}`);
           }
         }
         if (status !== "active") {
-          // No valid OTP — deny sign-in
+          console.warn(`[signup] signIn: denied — no valid OTP cookie email=${user.email}`);
           return "/signup?error=phone_required";
         }
       } else {
         // New user — must have a valid OTP cookie from the sign-up flow
         const cookieStore = await cookies();
         const signupToken = cookieStore.get("vayt-signup-token")?.value;
-        if (!signupToken) return "/signup?error=phone_required";
+        console.log(`[signup] signIn: new user — cookie present=${!!signupToken} email=${user.email}`);
+        if (!signupToken) {
+          console.warn(`[signup] signIn: denied — no signup cookie for new user email=${user.email}`);
+          return "/signup?error=phone_required";
+        }
 
         const otp = await prisma.otpCode.findUnique({ where: { sessionToken: signupToken } });
         if (!otp || !otp.used || otp.expiresAt <= new Date()) {
+          console.warn(`[signup] signIn: denied — expired/invalid OTP email=${user.email} otp=${!!otp}`);
           return "/signup?error=phone_expired";
         }
 
         phone = otp.phone;
         status = "active";
+        console.log(`[signup] signIn: new user activated phone=${phone} email=${user.email}`);
         // Consume
         await prisma.otpCode.update({ where: { id: otp.id }, data: { expiresAt: new Date() } });
       }
@@ -106,6 +121,7 @@ export const authOptions: NextAuthOptions = {
         },
       });
 
+      console.log(`[signup] signIn: upsert done — email=${user.email} status=${status}`);
       return true;
     },
 

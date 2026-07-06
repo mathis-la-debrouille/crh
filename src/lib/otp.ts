@@ -37,11 +37,16 @@ export async function consumeVerificationCode(
   phone: string,
   code: string
 ): Promise<{ ok: boolean; sessionToken?: string }> {
+  console.log(`[signup] consumeVerificationCode: phone=${phone} code=${code}`);
+
   const otp = await prisma.otpCode.findFirst({
     where: { phone, code: code.toUpperCase(), used: false, expiresAt: { gte: new Date() } },
     orderBy: { createdAt: "desc" },
   });
-  if (!otp) return { ok: false };
+  if (!otp) {
+    console.warn(`[signup] consumeVerificationCode: no matching code — expired or wrong phone=${phone} code=${code}`);
+    return { ok: false };
+  }
 
   const { randomUUID } = await import("crypto");
   const sessionToken = randomUUID();
@@ -51,6 +56,7 @@ export async function consumeVerificationCode(
     data: { used: true, sessionToken },
   });
 
+  console.log(`[signup] consumeVerificationCode: ok phone=${phone} sessionToken=${sessionToken.slice(0, 8)}…`);
   return { ok: true, sessionToken };
 }
 
