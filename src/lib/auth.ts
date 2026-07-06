@@ -1,6 +1,9 @@
 import { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
+
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "mathis.laurent.3m@gmail.com";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -17,7 +20,8 @@ export const authOptions: NextAuthOptions = {
             "profile",
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/gmail.labels",
-            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/calendar",
           ].join(" "),
         },
       },
@@ -27,7 +31,55 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user, account }) {
       if (!account || !user.email) return false;
 
-      // Upsert user and store Google tokens in DB
+      // Check if this user already has an active account (existing users / re-auth)
+      const existing = await prisma.user.findUnique({
+        where: { email: user.email },
+        select: { id: true, status: true },
+      });
+
+      let phone: string | undefined;
+      let status: "active" | "pending" = "pending";
+
+      if (existing?.status === "active") {
+        // Existing active user — just refresh tokens, no checks needed
+        status = "active";
+      } else if (existing?.status === "pending") {
+        // Check for valid OTP session cookie
+        const cookieStore = await cookies();
+        const signupToken = cookieStore.get("vayt-signup-token")?.value;
+        if (signupToken) {
+          const otp = await prisma.otpCode.findUnique({
+            where: { sessionToken: signupToken },
+          });
+          if (otp && otp.used && otp.expiresAt > new Date()) {
+            phone = otp.phone;
+            status = "active";
+            // Consume the session token so it can't be reused
+            await prisma.otpCode.update({ where: { id: otp.id }, data: { expiresAt: new Date() } });
+          }
+        }
+        if (status !== "active") {
+          // No valid OTP — deny sign-in
+          return "/signup?error=phone_required";
+        }
+      } else {
+        // New user — must have a valid OTP cookie from the sign-up flow
+        const cookieStore = await cookies();
+        const signupToken = cookieStore.get("vayt-signup-token")?.value;
+        if (!signupToken) return "/signup?error=phone_required";
+
+        const otp = await prisma.otpCode.findUnique({ where: { sessionToken: signupToken } });
+        if (!otp || !otp.used || otp.expiresAt <= new Date()) {
+          return "/signup?error=phone_expired";
+        }
+
+        phone = otp.phone;
+        status = "active";
+        // Consume
+        await prisma.otpCode.update({ where: { id: otp.id }, data: { expiresAt: new Date() } });
+      }
+
+      // Upsert user with status and phone
       await prisma.user.upsert({
         where: { email: user.email },
         update: {
@@ -35,10 +87,10 @@ export const authOptions: NextAuthOptions = {
           image: user.image,
           googleAccessToken: account.access_token,
           googleRefreshToken: account.refresh_token ?? undefined,
-          googleTokenExpiry: account.expires_at
-            ? new Date(account.expires_at * 1000)
-            : undefined,
+          googleTokenExpiry: account.expires_at ? new Date(account.expires_at * 1000) : undefined,
           googleConnected: true,
+          ...(status === "active" ? { status: "active" } : {}),
+          ...(phone ? { whatsappNumber: phone, phoneVerified: true } : {}),
         },
         create: {
           email: user.email,
@@ -46,10 +98,11 @@ export const authOptions: NextAuthOptions = {
           image: user.image,
           googleAccessToken: account.access_token,
           googleRefreshToken: account.refresh_token,
-          googleTokenExpiry: account.expires_at
-            ? new Date(account.expires_at * 1000)
-            : undefined,
+          googleTokenExpiry: account.expires_at ? new Date(account.expires_at * 1000) : undefined,
           googleConnected: true,
+          status,
+          whatsappNumber: phone,
+          phoneVerified: !!phone,
         },
       });
 
@@ -57,32 +110,35 @@ export const authOptions: NextAuthOptions = {
     },
 
     async jwt({ token, account, user }) {
-      // On first sign-in, account and user are present — look up the DB id by email
       if (account && user?.email) {
         token.accessToken = account.access_token;
         token.refreshToken = account.refresh_token;
         token.expiresAt = account.expires_at;
 
-        // Fetch the cuid-based DB id (token.sub is Google's user id, not ours)
         const dbUser = await prisma.user.findUnique({
           where: { email: user.email },
-          select: { id: true },
+          select: { id: true, status: true },
         });
         token.dbUserId = dbUser?.id;
+        token.status = dbUser?.status ?? "pending";
       }
       return token;
     },
 
     async session({ session, token }) {
-      // Use the DB id (cuid), not the Google sub
       session.userId = token.dbUserId as string;
+      session.userStatus = token.status as string;
+      session.isAdmin = (token.email ?? "") === ADMIN_EMAIL;
       return session;
     },
   },
   pages: {
-    signIn: "/",
+    signIn: "/signup",
+    error: "/signup",
   },
   session: {
     strategy: "jwt",
   },
 };
+
+export { ADMIN_EMAIL };

@@ -22,25 +22,112 @@ model User {
   whatsappNumber    String?
   whatsappConnected Boolean @default(false)
 
+  // AI (Claude)
+  claudeApiKey String?
+  ruleContext  String  @default("")
+  userContext  String  @default("")
+
   // Preferences
   timezone String @default("Europe/Paris")
+
+  // Daily brief
+  dailyBriefEnabled  Boolean   @default(false)
+  dailyBriefTime     String?   // "09:00" HH:mm in user's timezone
+  dailyBriefLastSent DateTime?
+
+  // Inbox watch
+  inboxWatchEnabled      Boolean   @default(false)
+  inboxWatchIntervalMins Int       @default(15)
+  inboxWatchLastChecked  DateTime?
+
+  // Account status
+  status        String  @default("active") // "pending" | "active" | "suspended"
+  phoneVerified Boolean @default(false)
 
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  messages WhatsAppMessage[]
+  messages  WhatsAppMessage[]
+  reminders Reminder[]
+  actions   AgentAction[]
+  contacts  Contact[]
 }
 
-model WhatsAppMessage {
+model AllowedNumber {
+  id        String   @id @default(cuid())
+  phone     String   @unique  // E.164 format: +33782748020
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+model OtpCode {
+  id           String    @id @default(cuid())
+  phone        String
+  code         String
+  expiresAt    DateTime
+  attempts     Int       @default(0) // max 5 wrong attempts
+  used         Boolean   @default(false)
+  sessionToken String?   @unique // set after successful verify — links phone to Google sign-in
+  createdAt    DateTime  @default(now())
+
+  @@index([phone])
+}
+
+model Contact {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  displayName     String
+  aliases         String    @default("[]") // JSON string[]
+  emails          String    @default("[]") // JSON string[]
+  relationship    String?
+  register        String?   // "tu" | "vous"
+  org             String?
+  role            String?
+  toneNotes       String?
+  notes           String?
+  lastInteraction DateTime?
+  emailCount      Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model AgentAction {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id])
-  direction String   // "inbound" or "outbound"
-  body      String
-  from      String
-  to        String
-  sid       String?
-  timestamp DateTime @default(now())
+  kind      String   // "draft" | "event" | "reminder" | "brief_config"
+  refId     String?  // gmail draft id, calendar event id, reminder id
+  summary   String   // human-readable, injected into context
+  createdAt DateTime @default(now())
+}
+
+model Reminder {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  message     String
+  scheduledAt DateTime
+  sent        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model WhatsAppMessage {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  direction    String   // "inbound" or "outbound"
+  body         String
+  from         String
+  to           String
+  sid          String?
+  timestamp    DateTime @default(now())
+  // Token usage — populated on outbound AI messages only
+  inputTokens  Int?
+  outputTokens Int?
+  model        String?
 }

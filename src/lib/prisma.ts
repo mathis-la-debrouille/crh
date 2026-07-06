@@ -1,19 +1,19 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
-
-// We use libSQL (Turso-compatible) for SQLite in Prisma 7+
-// For dev, this points at the local file via DATABASE_URL
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 function createPrismaClient() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
 
-  // Convert file:./dev.db -> file:///absolute/path/dev.db for libsql
-  const libsqlUrl = url.startsWith("file:")
-    ? url.replace(/^file:\.\//, `file://${process.cwd()}/`)
-    : url;
+  // Local file → use better-sqlite3 (native, synchronous, no connection overhead)
+  if (url.startsWith("file:")) {
+    const adapter = new PrismaBetterSqlite3({ url });
+    return new PrismaClient({ adapter });
+  }
 
-  const adapter = new PrismaLibSql({ url: libsqlUrl });
+  // Remote Turso/libSQL URL
+  const adapter = new PrismaLibSql({ url });
   return new PrismaClient({ adapter });
 }
 

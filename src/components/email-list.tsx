@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { EmailItem } from "@/types/api";
+import type { EmailItem, PaginatedEmails } from "@/types/api";
 
 function formatRelativeDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -12,7 +12,6 @@ function formatRelativeDate(dateStr: string): string {
   const minutes = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
-
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
   if (hours < 24) return `${hours}h ago`;
@@ -25,42 +24,68 @@ export function EmailList() {
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
+  const [pageStack, setPageStack] = useState<string[]>([]);
 
-  async function loadEmails() {
+  async function fetchPage(pageToken?: string) {
     setLoading(true);
     setError(null);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch("/api/gmail/emails");
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error ?? "Failed to load emails");
-      }
-      const data: EmailItem[] = await res.json();
-      setEmails(data);
+      const url = pageToken
+        ? `/api/gmail/emails?pageToken=${encodeURIComponent(pageToken)}`
+        : "/api/gmail/emails";
+      const res = await fetch(url, { signal: controller.signal });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to load emails");
+      const { emails: newEmails, nextPageToken: next } = data as PaginatedEmails;
+      setEmails(newEmails);
+      setNextPageToken(next);
       setLoaded(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      if (err instanceof Error && err.name === "AbortError") {
+        setError("Request timed out. The Google token may need to be refreshed — try signing out and back in.");
+      } else {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      }
     } finally {
+      clearTimeout(timeout);
       setLoading(false);
     }
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchPage(); }, []);
+
+  function loadFirst() {
+    setPageStack([]);
+    fetchPage();
+  }
+
+  function loadNext() {
+    if (!nextPageToken) return;
+    setPageStack((s) => [...s, nextPageToken]);
+    fetchPage(nextPageToken);
+  }
+
+  function loadPrev() {
+    const stack = [...pageStack];
+    stack.pop();
+    const token = stack[stack.length - 1];
+    setPageStack(stack);
+    fetchPage(token);
   }
 
   return (
     <div className="space-y-3">
       {!loaded && (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={loadEmails}
-          disabled={loading}
-        >
+        <Button variant="outline" size="sm" onClick={loadFirst} disabled={loading}>
           {loading ? "Loading..." : "View Recent Emails"}
         </Button>
       )}
 
-      {error && (
-        <p className="text-sm text-red-600">{error}</p>
-      )}
+      {error && <p className="text-sm text-red-600">{error}</p>}
 
       {loading && (
         <div className="space-y-2">
@@ -77,10 +102,11 @@ export function EmailList() {
         <>
           <div className="flex items-center justify-between">
             <p className="text-sm text-slate-500">{emails.length} emails</p>
-            <Button variant="ghost" size="sm" onClick={loadEmails}>
+            <Button variant="ghost" size="sm" onClick={loadFirst}>
               Refresh
             </Button>
           </div>
+
           <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
             {emails.map((email) => (
               <div key={email.id} className="px-4 py-3">
@@ -105,6 +131,25 @@ export function EmailList() {
                 No emails found
               </p>
             )}
+          </div>
+
+          <div className="flex justify-between">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadPrev}
+              disabled={pageStack.length === 0}
+            >
+              ← Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadNext}
+              disabled={!nextPageToken}
+            >
+              Next →
+            </Button>
           </div>
         </>
       )}

@@ -45,11 +45,21 @@ export function WhatsAppPanel({
   }, []);
 
   useEffect(() => {
-    if (connected) {
-      loadMessages();
-      const interval = setInterval(loadMessages, 5000);
-      return () => clearInterval(interval);
-    }
+    if (!connected) return;
+    loadMessages();
+
+    const es = new EventSource("/api/whatsapp/stream");
+    es.onmessage = (e) => {
+      try {
+        const msg: Message = JSON.parse(e.data);
+        setMessages((prev) => [...prev, msg]);
+      } catch {
+        // ignore malformed events
+      }
+    };
+    es.onerror = () => es.close();
+
+    return () => es.close();
   }, [connected, loadMessages]);
 
   useEffect(() => {

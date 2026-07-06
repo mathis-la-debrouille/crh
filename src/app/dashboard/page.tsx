@@ -7,6 +7,7 @@ import { ConnectionCard } from "@/components/connection-card";
 import { EmailList } from "@/components/email-list";
 import { CalendarList } from "@/components/calendar-list";
 import { WhatsAppPanel } from "@/components/whatsapp-panel";
+import { AiPanel } from "@/components/ai-panel";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -18,6 +19,7 @@ export default async function DashboardPage() {
       googleConnected: true,
       whatsappNumber: true,
       whatsappConnected: true,
+      claudeApiKey: true,
     },
   });
 
@@ -29,51 +31,34 @@ export default async function DashboardPage() {
 
       <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#0f172a]">
-            Connected Services
-          </h1>
+          <h1 className="text-2xl font-bold text-[#0f172a]">Connected Services</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Manage your integrations and test that everything works.
+            Manage your integrations and agent configuration.
           </p>
         </div>
 
         <div className="space-y-6">
-          {/* Gmail */}
-          <ConnectionCard
-            title="Gmail"
-            icon="📧"
-            connected={user.googleConnected}
-          >
+          <ConnectionCard title="Claude AI" icon="🤖" connected={!!user.claudeApiKey}>
+            <AiPanel initialConnected={!!user.claudeApiKey} />
+          </ConnectionCard>
+
+          <ConnectionCard title="Gmail" icon="📧" connected={user.googleConnected}>
             {user.googleConnected ? (
               <EmailList />
             ) : (
-              <p className="text-sm text-slate-500">
-                Sign in with Google to connect Gmail.
-              </p>
+              <p className="text-sm text-slate-500">Sign in with Google to connect Gmail.</p>
             )}
           </ConnectionCard>
 
-          {/* Google Calendar */}
-          <ConnectionCard
-            title="Google Calendar"
-            icon="📅"
-            connected={user.googleConnected}
-          >
+          <ConnectionCard title="Google Calendar" icon="📅" connected={user.googleConnected}>
             {user.googleConnected ? (
               <CalendarList />
             ) : (
-              <p className="text-sm text-slate-500">
-                Sign in with Google to connect Calendar.
-              </p>
+              <p className="text-sm text-slate-500">Sign in with Google to connect Calendar.</p>
             )}
           </ConnectionCard>
 
-          {/* WhatsApp */}
-          <ConnectionCard
-            title="WhatsApp"
-            icon="💬"
-            connected={user.whatsappConnected}
-          >
+          <ConnectionCard title="WhatsApp" icon="💬" connected={user.whatsappConnected}>
             <WhatsAppPanel
               initialNumber={user.whatsappNumber}
               initialConnected={user.whatsappConnected}

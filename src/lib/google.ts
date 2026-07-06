@@ -1,56 +1,70 @@
-import { google } from "googleapis";
 import { prisma } from "@/lib/prisma";
 
-function createOAuthClient() {
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET
-  );
-}
+export async function getValidAccessToken(userId: string): Promise<string> {
+  console.log("[google] 1 - findUnique for userId:", userId);
+  const rows = await prisma.$queryRaw<{
+    googleAccessToken: string | null;
+    googleRefreshToken: string | null;
+    googleTokenExpiry: string | null;
+  }[]>`
+    SELECT googleAccessToken, googleRefreshToken, googleTokenExpiry
+    FROM User WHERE id = ${userId} LIMIT 1
+  `;
+  console.log("[google] 2 - db done");
 
-async function getAuthenticatedClient(userId: string) {
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-
+  const user = rows[0];
   if (!user?.googleAccessToken) {
-    throw new Error("User has no Google access token");
+    throw new Error("No Google access token found. Please reconnect Google.");
   }
 
-  const oauth2Client = createOAuthClient();
-  oauth2Client.setCredentials({
-    access_token: user.googleAccessToken,
-    refresh_token: user.googleRefreshToken ?? undefined,
-    expiry_date: user.googleTokenExpiry
-      ? user.googleTokenExpiry.getTime()
-      : undefined,
-  });
+  const expiryMs = user.googleTokenExpiry ? new Date(user.googleTokenExpiry).getTime() : null;
+  const isExpired = expiryMs !== null && expiryMs < Date.now() + 5 * 60 * 1000;
 
-  // Refresh if expired (or within 5 minutes of expiry)
-  if (
-    user.googleTokenExpiry &&
-    user.googleTokenExpiry.getTime() < Date.now() + 5 * 60 * 1000
-  ) {
-    const { credentials } = await oauth2Client.refreshAccessToken();
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        googleAccessToken: credentials.access_token ?? user.googleAccessToken,
-        googleTokenExpiry: credentials.expiry_date
-          ? new Date(credentials.expiry_date)
-          : undefined,
-      },
-    });
-    oauth2Client.setCredentials(credentials);
+  if (!isExpired) {
+    console.log("[google] 3 - token still valid");
+    return user.googleAccessToken;
   }
 
-  return oauth2Client;
-}
+  if (!user.googleRefreshToken) {
+    throw new Error("Google token expired and no refresh token. Please sign in again.");
+  }
 
-export async function getGmailClient(userId: string) {
-  const auth = await getAuthenticatedClient(userId);
-  return google.gmail({ version: "v1", auth });
-}
+  console.log("[google] 3 - token expired, refreshing via HTTP...");
+  const refreshRes = await Promise.race([
+    fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        refresh_token: user.googleRefreshToken,
+        grant_type: "refresh_token",
+      }),
+    }),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Token refresh timed out after 10s")), 10000)
+    ),
+  ]);
 
-export async function getCalendarClient(userId: string) {
-  const auth = await getAuthenticatedClient(userId);
-  return google.calendar({ version: "v3", auth });
+  if (!refreshRes.ok) {
+    const errBody = await refreshRes.text();
+    throw new Error(`Token refresh failed (${refreshRes.status}): ${errBody}`);
+  }
+
+  const tokens = await refreshRes.json();
+  console.log("[google] 4 - refreshed token ok, expiry in", tokens.expires_in, "s");
+
+  const newExpiry = tokens.expires_in
+    ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+    : null;
+
+  await prisma.$executeRaw`
+    UPDATE User
+    SET googleAccessToken = ${tokens.access_token},
+        googleTokenExpiry = ${newExpiry}
+    WHERE id = ${userId}
+  `;
+
+  console.log("[google] 5 - DB updated");
+  return tokens.access_token as string;
 }

@@ -1,65 +1,71 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getGmailClient } from "@/lib/google";
-import { prisma } from "@/lib/prisma";
-import type { EmailItem } from "@/types/api";
+import { getValidAccessToken } from "@/lib/google";
+import type { PaginatedEmails, EmailItem } from "@/types/api";
 
-export async function GET() {
+const PAGE_SIZE = 20;
+
+export async function GET(req: NextRequest) {
+  console.log("[gmail] 1 - route entered");
+
   const session = await getServerSession(authOptions);
+  console.log("[gmail] 2 - session:", session?.userId);
   if (!session?.userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await prisma.user.findUnique({ where: { id: session.userId } });
-  if (!user?.googleConnected) {
-    return NextResponse.json(
-      { error: "Google account not connected" },
-      { status: 403 }
-    );
-  }
+  const pageToken = req.nextUrl.searchParams.get("pageToken") ?? undefined;
 
   try {
-    const gmail = await getGmailClient(session.userId);
+    console.log("[gmail] 3 - getting access token");
+    const accessToken = await getValidAccessToken(session.userId);
+    console.log("[gmail] 4 - got token, listing messages");
 
-    const listRes = await gmail.users.messages.list({
-      userId: "me",
-      maxResults: 20,
-      labelIds: ["INBOX"],
+    const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+    listUrl.searchParams.set("maxResults", String(PAGE_SIZE));
+    listUrl.searchParams.set("labelIds", "INBOX");
+    if (pageToken) listUrl.searchParams.set("pageToken", pageToken);
+
+    const listRes = await fetch(listUrl.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    const messages = listRes.data.messages ?? [];
+    if (!listRes.ok) {
+      const err = await listRes.json();
+      throw new Error(err?.error?.message ?? `Gmail list failed: ${listRes.status}`);
+    }
+
+    const listData = await listRes.json();
+    const messages: { id: string }[] = listData.messages ?? [];
+    console.log(`[gmail] 5 - got ${messages.length} message IDs`);
 
     const emails: EmailItem[] = await Promise.all(
       messages.map(async (msg) => {
-        const detail = await gmail.users.messages.get({
-          userId: "me",
-          id: msg.id!,
-          format: "metadata",
-          metadataHeaders: ["From", "Subject", "Date"],
-        });
-
-        const headers = detail.data.payload?.headers ?? [];
-        const get = (name: string) =>
-          headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
-            ?.value ?? "";
-
+        const detailRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!detailRes.ok) return { id: msg.id, from: "", subject: "", date: "", snippet: "" };
+        const detail = await detailRes.json();
+        const headers: { name: string; value: string }[] = detail.payload?.headers ?? [];
+        const get = (name: string) => headers.find((h) => h.name.toLowerCase() === name)?.value ?? "";
         return {
-          id: msg.id!,
-          from: get("From"),
-          subject: get("Subject"),
-          date: get("Date"),
-          snippet: detail.data.snippet ?? "",
+          id: msg.id,
+          from: get("from"),
+          subject: get("subject"),
+          date: get("date"),
+          snippet: detail.snippet ?? "",
         };
       })
     );
 
-    return NextResponse.json(emails);
-  } catch (error) {
-    console.error("Gmail API error:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch emails" },
-      { status: 500 }
-    );
+    console.log(`[gmail] 6 - done, returning ${emails.length} emails`);
+    const result: PaginatedEmails = { emails, nextPageToken: listData.nextPageToken ?? null };
+    return NextResponse.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[gmail] ERROR:", msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
