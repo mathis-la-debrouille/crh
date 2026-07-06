@@ -100,7 +100,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   let replyBody: string;
   let replyUsage: { inputTokens: number; outputTokens: number; model: string } | null = null;
 
-  if (user.claudeApiKey && user.ruleContext) {
+  if (user.claudeApiKey) {
     try {
       // §1 FIX: desc + reverse = 20 most recent messages in chronological order
       const history = await prisma.whatsAppMessage.findMany({
@@ -236,7 +236,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       replyBody = "erreur technique, réessaie dans un instant.";
     }
   } else {
-    console.warn("[webhook] missing claudeApiKey or ruleContext — apiKey:", !!user.claudeApiKey, "ruleContext len:", user.ruleContext?.length);
+    console.warn("[webhook] missing claudeApiKey — user has not set an API key userId:", user.id);
     replyBody = "agent non configuré — connecte-toi au dashboard pour paramétrer la clé Claude.";
   }
 
