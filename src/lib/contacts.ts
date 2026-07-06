@@ -14,6 +14,7 @@ export interface ContactData {
   notes?: string;
   lastInteraction?: Date;
   emailCount?: number;
+  preferredAccountId?: string; // EmailAccount.id routing hint
 }
 
 export interface ResolvedContact {
@@ -120,6 +121,7 @@ export async function upsertContact(
     if (data.relationship !== undefined) updateFields.relationship = data.relationship;
     if (data.lastInteraction !== undefined) updateFields.lastInteraction = data.lastInteraction.toISOString();
     if (data.emailCount !== undefined) updateFields.emailCount = data.emailCount;
+    if (data.preferredAccountId !== undefined) updateFields.preferredAccountId = data.preferredAccountId;
 
     await prisma.contact.update({
       where: { id: existing.id },

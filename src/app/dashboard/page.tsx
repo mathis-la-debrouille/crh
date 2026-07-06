@@ -8,6 +8,7 @@ import { EmailList } from "@/components/email-list";
 import { CalendarList } from "@/components/calendar-list";
 import { WhatsAppPanel } from "@/components/whatsapp-panel";
 import { AiPanel } from "@/components/ai-panel";
+import { AccountsPanel } from "@/components/accounts-panel";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -15,15 +16,15 @@ export default async function DashboardPage() {
 
   const user = await prisma.user.findUnique({
     where: { id: session.userId },
-    select: {
-      googleConnected: true,
-      whatsappNumber: true,
-      whatsappConnected: true,
-      claudeApiKey: true,
-    },
+    select: { whatsappNumber: true, whatsappConnected: true, claudeApiKey: true },
   });
 
   if (!user) redirect("/");
+
+  const connectedAccounts = await prisma.emailAccount.count({
+    where: { userId: session.userId, connected: true },
+  });
+  const googleConnected = connectedAccounts > 0;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -42,19 +43,16 @@ export default async function DashboardPage() {
             <AiPanel initialConnected={!!user.claudeApiKey} />
           </ConnectionCard>
 
-          <ConnectionCard title="Gmail" icon="📧" connected={user.googleConnected}>
-            {user.googleConnected ? (
-              <EmailList />
-            ) : (
-              <p className="text-sm text-slate-500">Sign in with Google to connect Gmail.</p>
-            )}
+          <ConnectionCard title="Email accounts" icon="📧" connected={googleConnected}>
+            <AccountsPanel />
+            {googleConnected && <div className="mt-4 pt-4 border-t border-slate-100"><EmailList /></div>}
           </ConnectionCard>
 
-          <ConnectionCard title="Google Calendar" icon="📅" connected={user.googleConnected}>
-            {user.googleConnected ? (
+          <ConnectionCard title="Google Calendar" icon="📅" connected={googleConnected}>
+            {googleConnected ? (
               <CalendarList />
             ) : (
-              <p className="text-sm text-slate-500">Sign in with Google to connect Calendar.</p>
+              <p className="text-sm text-slate-500">Connect a Google account to access Calendar.</p>
             )}
           </ConnectionCard>
 

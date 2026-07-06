@@ -12,7 +12,7 @@ model User {
   name  String?
   image String?
 
-  // Google OAuth tokens
+  // Google OAuth tokens — kept for backward compat; authoritative copy is on EmailAccount
   googleAccessToken  String?
   googleRefreshToken String?
   googleTokenExpiry  DateTime?
@@ -32,16 +32,16 @@ model User {
 
   // Daily brief
   dailyBriefEnabled  Boolean   @default(false)
-  dailyBriefTime     String?   // "09:00" HH:mm in user's timezone
+  dailyBriefTime     String?
   dailyBriefLastSent DateTime?
 
-  // Inbox watch
+  // Inbox watch (master toggle; per-account flag lives on EmailAccount)
   inboxWatchEnabled      Boolean   @default(false)
   inboxWatchIntervalMins Int       @default(15)
   inboxWatchLastChecked  DateTime?
 
   // Account status
-  status        String  @default("active") // "pending" | "active" | "suspended"
+  status        String  @default("active")
   phoneVerified Boolean @default(false)
 
   // Timestamps
@@ -49,60 +49,95 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  messages  WhatsAppMessage[]
-  reminders Reminder[]
-  actions   AgentAction[]
-  contacts  Contact[]
+  messages      WhatsAppMessage[]
+  reminders     Reminder[]
+  actions       AgentAction[]
+  contacts      Contact[]
+  emailAccounts EmailAccount[]
+}
+
+model EmailAccount {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+  provider  String  @default("google")
+  email     String
+  label     String
+  isPrimary Boolean @default(false)
+  connected Boolean @default(true)
+
+  accessToken  String?
+  refreshToken String?
+  tokenExpiry  DateTime?
+
+  displayName String?
+  signature   String?
+  language    String?
+  styleNotes  String?
+  workContext String?
+
+  inboxWatchEnabled     Boolean   @default(false)
+  inboxWatchLastChecked DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, email])
+  @@index([userId])
 }
 
 model AllowedNumber {
   id        String   @id @default(cuid())
-  phone     String   @unique  // E.164 format: +33612345678
+  phone     String   @unique
   note      String?
   createdAt DateTime @default(now())
 }
 
 model OtpCode {
-  id           String    @id @default(cuid())
+  id           String   @id @default(cuid())
   phone        String
   code         String
   expiresAt    DateTime
-  attempts     Int       @default(0) // max 5 wrong attempts
-  used         Boolean   @default(false)
-  sessionToken String?   @unique // set after successful verify — links phone to Google sign-in
-  createdAt    DateTime  @default(now())
+  attempts     Int      @default(0)
+  used         Boolean  @default(false)
+  sessionToken String?  @unique
+  createdAt    DateTime @default(now())
 
   @@index([phone])
 }
 
 model Contact {
-  id              String    @id @default(cuid())
-  userId          String
-  user            User      @relation(fields: [userId], references: [id])
-  displayName     String
-  aliases         String    @default("[]") // JSON string[]
-  emails          String    @default("[]") // JSON string[]
-  relationship    String?
-  register        String?   // "tu" | "vous"
-  org             String?
-  role            String?
-  toneNotes       String?
-  notes           String?
-  lastInteraction DateTime?
-  emailCount      Int       @default(0)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                 String    @id @default(cuid())
+  userId             String
+  user               User      @relation(fields: [userId], references: [id])
+  displayName        String
+  aliases            String    @default("[]")
+  emails             String    @default("[]")
+  relationship       String?
+  register           String?
+  org                String?
+  role               String?
+  toneNotes          String?
+  notes              String?
+  lastInteraction    DateTime?
+  emailCount         Int       @default(0)
+  preferredAccountId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId])
 }
 
 model AgentAction {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  kind      String   // "draft" | "event" | "reminder" | "brief_config"
-  refId     String?  // gmail draft id, calendar event id, reminder id
-  summary   String   // human-readable, injected into context
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  kind         String
+  refId        String?
+  summary      String
+  accountEmail String?
+
   createdAt DateTime @default(now())
 }
 
@@ -120,13 +155,12 @@ model WhatsAppMessage {
   id           String   @id @default(cuid())
   userId       String
   user         User     @relation(fields: [userId], references: [id])
-  direction    String   // "inbound" or "outbound"
+  direction    String
   body         String
   from         String
   to           String
   sid          String?
   timestamp    DateTime @default(now())
-  // Token usage — populated on outbound AI messages only
   inputTokens  Int?
   outputTokens Int?
   model        String?

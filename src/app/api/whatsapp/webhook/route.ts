@@ -3,8 +3,9 @@ import twilio from "twilio";
 import { sendWhatsApp } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
 import { waEmitter } from "@/lib/whatsapp-events";
-import { runAgentLoop } from "@/lib/claude";
-import { getValidAccessToken } from "@/lib/google";
+import { runAgentLoop, buildAccountsBlock } from "@/lib/claude";
+import { makeTokenProvider } from "@/lib/google";
+import { getConnectedAccounts } from "@/lib/accounts";
 import { resolveContacts, formatContactsBlock } from "@/lib/contacts";
 import { consumeVerificationCode } from "@/lib/otp";
 
@@ -68,7 +69,6 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       claudeApiKey: true,
       ruleContext: true,
       userContext: true,
-      googleConnected: true,
       timezone: true,
       dailyBriefEnabled: true,
       dailyBriefTime: true,
@@ -162,18 +162,10 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         messages.push({ role: "user", content: body });
       }
 
-      // Google access token — explicit state so Claude never has to guess
-      let accessToken: string | null = null;
-      let googleState = "non connecté";
-      if (user.googleConnected) {
-        try {
-          accessToken = await getValidAccessToken(user.id);
-          googleState = "connecté";
-        } catch {
-          googleState = "connecté mais temporairement indisponible";
-          console.log("[agent] Google token unavailable");
-        }
-      }
+      // Load accounts + token provider (lazy, cached per request)
+      const accounts = await getConnectedAccounts(user.id);
+      const getToken = makeTokenProvider();
+      const accountsBlock = buildAccountsBlock(accounts);
 
       // Datetime in system prompt, not in the message
       const tz = user.timezone ?? "Europe/Paris";
@@ -203,8 +195,11 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
 
       // The most recent action = focus courant (for pronoun resolution: "le", "ça", "réessaie")
       const lastAction = sortedActions[sortedActions.length - 1];
+      const accountLabel = lastAction?.accountEmail
+        ? (accounts.find((a) => a.email === lastAction.accountEmail)?.label ?? lastAction.accountEmail)
+        : null;
       const focusCourant = lastAction
-        ? `${lastAction.kind}${lastAction.refId ? ` (${lastAction.refId})` : ""} : ${lastAction.summary}`
+        ? `${lastAction.kind}${lastAction.refId ? ` (${lastAction.refId})` : ""}${accountLabel ? ` [${accountLabel}]` : ""} : ${lastAction.summary}`
         : null;
 
       let briefStatus: string;
@@ -233,9 +228,13 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         ? `enabled — checking every ${user.inboxWatchIntervalMins ?? 15} min`
         : "disabled";
 
+      const accountsStatus = accounts.length === 0
+        ? "none"
+        : accounts.map((a) => `${a.label} (${a.connected ? "ok" : "disconnected"})`).join(", ");
+
       const agentConfig = [
         `now: ${datetimeStr}`,
-        `google: ${googleState}`,
+        `accounts: ${accountsStatus}`,
         `daily brief: ${briefStatus}`,
         `inbox watch: ${inboxWatchStatus}`,
       ].join("\n");
@@ -246,7 +245,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       const contactsBlock = formatContactsBlock(resolvedContacts);
       if (contactsBlock) console.log(`[agent] injecting ${resolvedContacts.length} contact(s): ${resolvedContacts.map(c => c.displayName).join(", ")}`);
 
-      console.log(`[webhook] calling Claude — messages: ${messages.length}, accessToken: ${!!accessToken}`);
+      console.log(`[webhook] calling Claude — messages: ${messages.length}, accounts: ${accounts.length}`);
       const parsed = await runAgentLoop({
         apiKey: user.claudeApiKey,
         ruleContext: user.ruleContext,
@@ -255,8 +254,10 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         actionsRecentes: actionsBlock,
         focusCourant: focusCourant ?? undefined,
         contactsContext: contactsBlock,
+        accountsBlock,
         messages,
-        accessToken,
+        accounts,
+        getToken,
         userId: user.id,
       });
 

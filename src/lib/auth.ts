@@ -122,6 +122,34 @@ export const authOptions: NextAuthOptions = {
       });
 
       console.log(`[signup] signIn: upsert done — email=${user.email} status=${status}`);
+
+      // Upsert primary EmailAccount so token is always current
+      const dbUser2 = await prisma.user.findUnique({ where: { email: user.email }, select: { id: true } });
+      if (dbUser2 && account.access_token) {
+        const tokenExpiry = account.expires_at ? new Date(account.expires_at * 1000) : null;
+        await prisma.emailAccount.upsert({
+          where: { userId_email: { userId: dbUser2.id, email: user.email } },
+          update: {
+            accessToken: account.access_token,
+            refreshToken: account.refresh_token ?? undefined,
+            tokenExpiry,
+            connected: true,
+            isPrimary: true,
+          },
+          create: {
+            userId: dbUser2.id,
+            email: user.email,
+            label: "principal",
+            isPrimary: true,
+            provider: "google",
+            connected: true,
+            accessToken: account.access_token,
+            refreshToken: account.refresh_token ?? null,
+            tokenExpiry,
+          },
+        });
+      }
+
       return true;
     },
 
