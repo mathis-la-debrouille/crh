@@ -97,6 +97,38 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     timestamp: inbound.timestamp,
   });
 
+  // ── First-ever message → onboarding flow ─────────────────────────────────
+  const inboundCount = await prisma.whatsAppMessage.count({
+    where: { userId: user.id, direction: "inbound" },
+  });
+
+  if (inboundCount === 1) {
+    console.log(`[webhook] first message from userId=${user.id} — sending onboarding`);
+
+    const onboardingMessages = [
+      "hi, Excited to work with you :)",
+      "To get started — would you like a daily brief each morning? I can send you a summary of your calendar and emails at a time of your choosing.\n\nReply with a time (e.g. '9am') or 'skip' to set it up later.",
+    ];
+
+    for (const text of onboardingMessages) {
+      const sent = await sendWhatsApp(fromNumber, text);
+      await prisma.whatsAppMessage.create({
+        data: {
+          userId: user.id,
+          direction: "outbound",
+          body: text,
+          from: toNumber,
+          to: fromNumber,
+          sid: sent.sid,
+        },
+      });
+    }
+
+    return new NextResponse("<Response></Response>", {
+      headers: { "Content-Type": "text/xml" },
+    });
+  }
+
   let replyBody: string;
   let replyUsage: { inputTokens: number; outputTokens: number; model: string } | null = null;
 

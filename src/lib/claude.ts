@@ -258,6 +258,7 @@ export async function runAgentLoop({
   userId: string;
 }): Promise<AgentResponse> {
   const systemParts = [
+    `<output_rules>\n- Professional/contextual emoji are allowed: ✅ ☀️ 💡 📋 📅 ✉️ 🔔 ⚠️ and similar.\n- Never use face emoji (😂 😊 🥳 😍 🤣 etc.) or celebratory/unprofessional emoji (🎉 🎊 🔥 💯 etc.).\n- Text smileys are allowed :) ;) etc.\n</output_rules>`,
     `<rule_context>\n${ruleContext}\n</rule_context>`,
     `<user_context>\n${userContext}\n</user_context>`,
   ];
