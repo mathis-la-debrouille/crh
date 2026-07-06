@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
 
 type Step = "phone" | "waiting" | "google";
 
+export const dynamic = "force-dynamic";
+
 export default function SignupPage() {
   const params = useSearchParams();
   const errorParam = params.get("error");
@@ -19,8 +21,8 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(
     errorParam === "phone_required" ? "Please verify your phone number first." :
-    errorParam === "phone_expired"  ? "Verification expired — please start again." :
-    null
+      errorParam === "phone_expired" ? "Verification expired — please start again." :
+        null
   );
 
   // Polling ref
@@ -59,9 +61,9 @@ export default function SignupPage() {
       const data = await res.json();
       if (!res.ok) {
         setError(
-          data.error === "not_allowed"       ? "This number isn't on the access list." :
-          data.error === "too_many_requests" ? "Too many requests — wait a few minutes." :
-          "Something went wrong. Check the number and try again."
+          data.error === "not_allowed" ? "This number isn't on the access list." :
+            data.error === "too_many_requests" ? "Too many requests — wait a few minutes." :
+              "Something went wrong. Check the number and try again."
         );
         return;
       }
@@ -94,11 +96,10 @@ export default function SignupPage() {
             {(["phone", "waiting", "google"] as Step[]).map((s, i) => (
               <div key={s} className="flex items-center gap-2">
                 {i > 0 && <div className="h-px w-8 bg-slate-200" />}
-                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${
-                  step === s          ? "bg-[#0f172a] text-white" :
+                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${step === s ? "bg-[#0f172a] text-white" :
                   stepIndex[step] > i ? "bg-slate-200 text-slate-600" :
-                                        "border border-slate-200 text-slate-300"
-                }`}>
+                    "border border-slate-200 text-slate-300"
+                  }`}>
                   {i + 1}
                 </span>
               </div>
