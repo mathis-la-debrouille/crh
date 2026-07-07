@@ -2,23 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
-interface AiPanelProps {
-  initialConnected: boolean;
-}
-
-export function AiPanel({ initialConnected }: AiPanelProps) {
-  const [apiKey, setApiKey] = useState("");
+export function AiPanel() {
   const [ruleContext, setRuleContext] = useState("");
   const [userContext, setUserContext] = useState("");
-  const [connected, setConnected] = useState(initialConnected);
-  const [savingKey, setSavingKey] = useState(false);
   const [savingRule, setSavingRule] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Daily brief
   const [briefEnabled, setBriefEnabled] = useState(false);
   const [briefTime, setBriefTime] = useState("09:00");
   const [savingBrief, setSavingBrief] = useState(false);
@@ -28,7 +18,6 @@ export function AiPanel({ initialConnected }: AiPanelProps) {
     fetch("/api/ai/config")
       .then((r) => r.json())
       .then((data) => {
-        setConnected(!!data.claudeApiKey);
         setRuleContext(data.ruleContext ?? "");
         setUserContext(data.userContext ?? "");
       })
@@ -68,27 +57,6 @@ export function AiPanel({ initialConnected }: AiPanelProps) {
     }
   }
 
-  async function saveApiKey() {
-    if (!apiKey.trim()) return;
-    setSavingKey(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/ai/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claudeApiKey: apiKey.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to save");
-      setConnected(true);
-      setApiKey("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setSavingKey(false);
-    }
-  }
-
   async function saveContext(field: "ruleContext" | "userContext", value: string) {
     const setSaving = field === "ruleContext" ? setSavingRule : setSavingUser;
     setSaving(true);
@@ -105,39 +73,6 @@ export function AiPanel({ initialConnected }: AiPanelProps) {
 
   return (
     <div className="space-y-6">
-      {/* API Key */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-slate-700">Claude API Key</span>
-          {connected && (
-            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
-              Connected
-            </span>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <Input
-            type="password"
-            placeholder={connected ? "sk-ant-••••••••  (enter new key to replace)" : "sk-ant-api03-…"}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            className="max-w-sm font-mono text-sm"
-          />
-          <Button
-            size="sm"
-            onClick={saveApiKey}
-            disabled={savingKey || !apiKey.trim()}
-            className="bg-[#2563eb] hover:bg-blue-700"
-          >
-            {savingKey ? "Saving…" : connected ? "Replace" : "Connect"}
-          </Button>
-        </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <p className="text-xs text-slate-400">
-          Your key is stored in the database and never exposed to the client.
-        </p>
-      </div>
-
       {/* Daily Brief */}
       <div className="space-y-2 rounded-md border border-slate-200 p-4">
         <div className="flex items-center justify-between">

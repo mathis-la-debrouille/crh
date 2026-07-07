@@ -9,6 +9,7 @@ import { getConnectedAccounts } from "@/lib/accounts";
 import { resolveContacts, formatContactsBlock } from "@/lib/contacts";
 import { consumeVerificationCode } from "@/lib/otp";
 import { sanitizeReply } from "@/lib/utils";
+import { ADMIN_EMAIL } from "@/lib/auth";
 
 const SILENT = new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -62,12 +63,12 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     return SILENT;
   }
 
-  const user = await prisma.user.findFirst({
+  const [user, adminRow] = await Promise.all([
+    prisma.user.findFirst({
     where: { whatsappNumber: fromNumber },
     select: {
       id: true,
       status: true,
-      claudeApiKey: true,
       ruleContext: true,
       userContext: true,
       timezone: true,
@@ -76,7 +77,10 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       inboxWatchEnabled: true,
       inboxWatchIntervalMins: true,
     },
-  });
+  }),
+    prisma.user.findUnique({ where: { email: ADMIN_EMAIL }, select: { claudeApiKey: true } }),
+  ]);
+  const claudeApiKey = adminRow?.claudeApiKey ?? null;
 
   // Reject unknown numbers and non-active accounts silently
   if (!user || user.status !== "active") {
@@ -133,7 +137,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   let replyBody: string;
   let replyUsage: { inputTokens: number; outputTokens: number; model: string } | null = null;
 
-  if (user.claudeApiKey) {
+  if (claudeApiKey) {
     try {
       // §1 FIX: desc + reverse = 20 most recent messages in chronological order
       const history = await prisma.whatsAppMessage.findMany({
@@ -248,7 +252,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
 
       console.log(`[webhook] calling Claude — messages: ${messages.length}, accounts: ${accounts.length}`);
       const parsed = await runAgentLoop({
-        apiKey: user.claudeApiKey,
+        apiKey: claudeApiKey,
         ruleContext: user.ruleContext,
         userContext: user.userContext ?? "",
         agentConfig,
@@ -271,8 +275,8 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       replyBody = "erreur technique, réessaie dans un instant.";
     }
   } else {
-    console.warn("[webhook] missing claudeApiKey — user has not set an API key userId:", user.id);
-    replyBody = "agent non configuré — connecte-toi au dashboard pour paramétrer la clé Claude.";
+    console.warn("[webhook] missing claudeApiKey — admin has not set the API key");
+    replyBody = "agent non configuré — l'administrateur doit paramétrer la clé Claude.";
   }
 
   console.log(`[webhook] sending reply (${replyBody.length} chars) to ${fromNumber}`);

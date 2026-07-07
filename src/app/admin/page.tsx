@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { Navbar } from "@/components/navbar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AdminWhitelist } from "@/components/admin-whitelist";
+import { AdminClaudeKey } from "@/components/admin-claude-key";
 
 const COST_PER_M_IN = 3;    // $3 per million input tokens
 const COST_PER_M_OUT = 15;  // $15 per million output tokens
@@ -32,6 +33,8 @@ export default async function AdminPage() {
 
   const now = new Date();
   const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+
+  const adminUser = await prisma.user.findUnique({ where: { email: ADMIN_EMAIL }, select: { claudeApiKey: true } });
 
   const [
     users,
@@ -243,6 +246,14 @@ export default async function AdminPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* ── Claude API key ── */}
+        <Card>
+          <CardHeader><CardTitle>Claude API key</CardTitle></CardHeader>
+          <CardContent>
+            <AdminClaudeKey initialConnected={!!adminUser?.claudeApiKey} />
+          </CardContent>
+        </Card>
 
         {/* ── Whitelist ── */}
         <Card>

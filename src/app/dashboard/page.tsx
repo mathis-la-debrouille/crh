@@ -1,5 +1,5 @@
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { authOptions, ADMIN_EMAIL } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { Navbar } from "@/components/navbar";
@@ -12,16 +12,18 @@ export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
   if (!session?.userId) redirect("/");
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.userId },
-    select: { whatsappNumber: true, whatsappConnected: true, claudeApiKey: true },
-  });
+  const [user, admin, connectedAccounts] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: session.userId },
+      select: { whatsappNumber: true, whatsappConnected: true },
+    }),
+    prisma.user.findUnique({ where: { email: ADMIN_EMAIL }, select: { claudeApiKey: true } }),
+    prisma.emailAccount.count({ where: { userId: session.userId, connected: true } }),
+  ]);
 
   if (!user) redirect("/");
 
-  const connectedAccounts = await prisma.emailAccount.count({
-    where: { userId: session.userId, connected: true },
-  });
+  const claudeConnected = !!admin?.claudeApiKey;
   const googleConnected = connectedAccounts > 0;
 
   return (
@@ -37,8 +39,8 @@ export default async function DashboardPage() {
         </div>
 
         <div className="space-y-6">
-          <ConnectionCard title="Claude AI" icon="🤖" connected={!!user.claudeApiKey}>
-            <AiPanel initialConnected={!!user.claudeApiKey} />
+          <ConnectionCard title="Claude AI" icon="🤖" connected={claudeConnected}>
+            <AiPanel />
           </ConnectionCard>
 
           <ConnectionCard title="Email accounts" icon="📧" connected={googleConnected}>
