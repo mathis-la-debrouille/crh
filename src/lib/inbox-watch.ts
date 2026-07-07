@@ -1,6 +1,7 @@
 import { searchEmails } from "@/lib/gmail-tools";
 import { getValidAccessToken } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
+import { triageEmails } from "@/lib/email-triage";
 import { sendWhatsApp } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
 
@@ -49,26 +50,27 @@ export async function checkInboxForUser(userId: string): Promise<void> {
 
     const emails = await searchEmails(
       accessToken,
-      `category:primary after:${since} -from:me is:unread`,
-      5
+      `after:${since} -from:me is:unread in:inbox`,
+      10
     );
 
     if (emails.length === 0) continue;
 
+    const triaged = await triageEmails(userId, emails);
+    const urgent = triaged.filter((e) => e.priority === "high");
+    if (urgent.length === 0) continue;
+
+    const nameOf = (f: string) => f.replace(/<[^>]+>/, "").replace(/"/g, "").trim();
     const prefix = multiAccount ? `[${acct.label}] ` : "";
     let message: string;
-    if (emails.length === 1) {
-      const e = emails[0];
-      const from = e.from.replace(/<[^>]+>/, "").trim().replace(/"/g, "");
-      message = `${prefix}nouveau mail de ${from} — "${e.subject}"\ntu veux que je le lise ou que je prépare une réponse ?`;
+    if (urgent.length === 1) {
+      const e = urgent[0];
+      message = `${prefix}${nameOf(e.from)} — ${e.subject}`;
+      if (e.category === "human") message += `\nje te prépare une réponse ?`;
     } else {
-      const lines = [`${prefix}${emails.length} nouveaux mails importants :`];
-      for (const e of emails) {
-        const from = e.from.replace(/<[^>]+>/, "").trim().replace(/"/g, "");
-        lines.push(`- ${from} — ${e.subject}`);
-      }
-      lines.push("tu veux que je t'en résume un ?");
-      message = lines.join("\n");
+      const top = urgent.slice(0, 2).map((e) => `${prefix}${nameOf(e.from)} — ${e.subject}`);
+      const rest = urgent.length - 2;
+      message = top.join("\n") + (rest > 0 ? `\n+ ${rest} autre(s) mail(s) important(s)` : "") + `\ntu veux que je t'en résume un ?`;
     }
 
     await sendWhatsApp(user.whatsappNumber, message);

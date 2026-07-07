@@ -2,6 +2,7 @@ import { searchEmails } from "@/lib/gmail-tools";
 import { listCalendarEvents } from "@/lib/calendar-tools";
 import { getValidAccessToken } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
+import { triageEmails } from "@/lib/email-triage";
 import { sendWhatsApp } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
 
@@ -17,30 +18,65 @@ function formatTime(iso: string, tz: string): string {
   } catch { return iso; }
 }
 
+function nameOf(from: string): string {
+  return from.replace(/<[^>]+>/, "").replace(/"/g, "").trim();
+}
+
 export async function generateBriefText(userId: string): Promise<string> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { timezone: true, userContext: true },
   });
 
-  const briefContentLine = user?.userContext?.split("\n").find((l) => l.toLowerCase().includes("brief_content"));
-  const briefContent = briefContentLine?.toLowerCase() ?? "";
-  const showProjects = briefContent.includes("sujets") || briefContent.includes("projet");
-  const showReminders = briefContent.includes("rappel");
-
   const tz = user?.timezone ?? "Europe/Paris";
   const now = new Date();
   const dateStr = now.toLocaleDateString("fr-FR", { timeZone: tz, weekday: "long", day: "numeric", month: "long" });
-  const sections: string[] = [`bonjour. ${dateStr}.`];
+  const lines: string[] = [`bonjour. ${dateStr}.`];
 
   const accounts = await getConnectedAccounts(userId);
+  const multiAccount = accounts.length > 1;
+
+  // ── Emails — triage and show only high, count the rest ───────────────────
+  let highLines: string[] = [];
+  let normalCount = 0;
+  let bruitCount = 0;
 
   if (accounts.length > 0) {
-    const { timeMin, timeMax } = todayRange(tz);
-    const multiAccount = accounts.length > 1;
-
-    // ── Calendar — fan-out, merge sorted by start ────────────────────────────
     try {
+      const allEmailResults = await Promise.allSettled(
+        accounts.map(async (a) => {
+          const token = await getValidAccessToken(a.id);
+          const emails = await searchEmails(token, "in:inbox newer_than:1d -from:me", 20);
+          return { label: a.label, emails };
+        })
+      );
+
+      for (const settled of allEmailResults) {
+        if (settled.status !== "fulfilled") continue;
+        const { label, emails } = settled.value;
+        const triaged = await triageEmails(userId, emails);
+        for (const e of triaged) {
+          if (e.priority === "high") {
+            const prefix = multiAccount ? `[${label}] ` : "";
+            highLines.push(`${prefix}*${nameOf(e.from)}* — ${e.subject}`);
+          } else if (e.priority === "normal") {
+            normalCount++;
+          } else {
+            bruitCount++;
+          }
+        }
+      }
+
+      if (highLines.length > 0) {
+        for (const l of highLines.slice(0, 3)) lines.push(l);
+      }
+    } catch { console.error("[daily-brief] email fetch failed"); }
+  }
+
+  // ── Calendar — fan-out, single line summary ───────────────────────────────
+  if (accounts.length > 0) {
+    try {
+      const { timeMin, timeMax } = todayRange(tz);
       const allEventSets = await Promise.allSettled(
         accounts.map(async (a) => {
           const token = await getValidAccessToken(a.id);
@@ -54,92 +90,58 @@ export async function generateBriefText(userId: string): Promise<string> {
       );
       allEvents.sort((a, b) => (a.start ?? "") > (b.start ?? "") ? 1 : -1);
 
-      if (allEvents.length === 0) {
-        sections.push("*agenda* — rien de prévu aujourd'hui.");
+      const top = allEvents.slice(0, 5);
+      if (top.length === 0) {
+        lines.push("agenda : rien de prévu.");
       } else {
-        const lines = ["*agenda*"];
-        for (const e of allEvents) {
+        const parts = top.map((e) => {
           const isAllDay = !e.start?.includes("T");
-          const start = isAllDay ? "journée" : formatTime(e.start, tz);
-          const end = !isAllDay && e.end ? `–${formatTime(e.end, tz)}` : "";
+          const time = isAllDay ? "journée" : formatTime(e.start, tz);
           const acct = multiAccount ? ` (${e.accountLabel})` : "";
-          lines.push(`- ${start}${end} — ${e.summary}${acct}`);
-        }
-        sections.push(lines.join("\n"));
+          return `${time} ${e.summary}${acct}`;
+        });
+        lines.push(`agenda : ${parts.join(", ")}.`);
       }
     } catch { console.error("[daily-brief] calendar fetch failed"); }
-
-    // ── Inbox — per account ───────────────────────────────────────────────────
-    try {
-      if (!multiAccount) {
-        const a = accounts[0];
-        const token = await getValidAccessToken(a.id);
-        const allNew = await searchEmails(token, "newer_than:1d", 50);
-        const actionable = await searchEmails(token, "newer_than:1d category:primary -from:me", 10);
-        if (allNew.length === 0) {
-          sections.push("*inbox* — rien de nouveau depuis hier.");
-        } else if (actionable.length === 0) {
-          sections.push(`*inbox* — ${allNew.length} nouveaux, aucun à traiter.`);
-        } else {
-          const lines = [`*inbox* — ${allNew.length} nouveaux, ${actionable.length} à traiter :`];
-          for (const e of actionable) {
-            const from = e.from.replace(/<[^>]+>/, "").trim().replace(/"/g, "");
-            lines.push(`- ${from} — ${e.subject}`);
-          }
-          sections.push(lines.join("\n"));
-        }
-      } else {
-        // Multi-account: group under sub-headers
-        const inboxLines: string[] = ["*inbox*"];
-        for (const a of accounts) {
-          try {
-            const token = await getValidAccessToken(a.id);
-            const actionable = await searchEmails(token, "newer_than:1d category:primary -from:me", 5);
-            if (actionable.length === 0) {
-              inboxLines.push(`  ${a.label} : rien à traiter`);
-            } else {
-              inboxLines.push(`  ${a.label} :`);
-              for (const e of actionable) {
-                const from = e.from.replace(/<[^>]+>/, "").trim().replace(/"/g, "");
-                inboxLines.push(`  - ${from} — ${e.subject}`);
-              }
-            }
-          } catch {
-            inboxLines.push(`  ⚠️ ${a.label} : compte à reconnecter`);
-          }
-        }
-        sections.push(inboxLines.join("\n"));
-      }
-    } catch { console.error("[daily-brief] inbox fetch failed"); }
   }
 
-  if (showProjects && user?.userContext) {
+  // ── Reminders ─────────────────────────────────────────────────────────────
+  try {
+    const upcoming = await prisma.reminder.findMany({
+      where: { userId, sent: false, scheduledAt: { gte: new Date() } },
+      orderBy: { scheduledAt: "asc" }, take: 3,
+    });
+    if (upcoming.length > 0) {
+      const parts = upcoming.map((r) => {
+        const time = r.scheduledAt.toLocaleTimeString("fr-FR", { timeZone: tz, hour: "2-digit", minute: "2-digit" });
+        return `${time} ${r.message}`;
+      });
+      lines.push(`rappels : ${parts.join(", ")}.`);
+    }
+  } catch { console.error("[daily-brief] reminders fetch failed"); }
+
+  // ── Projects / priorities from userContext ────────────────────────────────
+  if (user?.userContext) {
     const projectLines = user.userContext
       .split("\n")
       .filter((l) => l.startsWith("[PROJECT]") || l.startsWith("[PRIORITY]"))
-      .map((l) => `- ${l.replace(/^\[[^\]]+\]\s*/, "")}`);
-    if (projectLines.length > 0) sections.push("*sujets en cours*\n" + projectLines.join("\n"));
+      .map((l) => l.replace(/^\[[^\]]+\]\s*/, "").trim())
+      .filter(Boolean);
+    if (projectLines.length > 0) {
+      lines.push(`en cours : ${projectLines.slice(0, 3).join(", ")}.`);
+    }
   }
 
-  if (showReminders) {
-    try {
-      const upcoming = await prisma.reminder.findMany({
-        where: { userId, sent: false, scheduledAt: { gte: new Date() } },
-        orderBy: { scheduledAt: "asc" }, take: 3,
-      });
-      if (upcoming.length > 0) {
-        const lines = ["*rappels à venir*"];
-        for (const r of upcoming) {
-          const time = r.scheduledAt.toLocaleTimeString("fr-FR", { timeZone: tz, hour: "2-digit", minute: "2-digit" });
-          lines.push(`- ${time} — ${r.message}`);
-        }
-        sections.push(lines.join("\n"));
-      }
-    } catch { console.error("[daily-brief] reminders fetch failed"); }
+  // ── Noise count line ──────────────────────────────────────────────────────
+  const totalOther = normalCount + bruitCount;
+  if (totalOther > 0 && accounts.length > 0) {
+    const normalPart = normalCount > 0 ? `${normalCount} à regarder` : "";
+    const bruitPart = bruitCount > 0 ? `${bruitCount} newsletters/notifs` : "";
+    const parts = [normalPart, bruitPart].filter(Boolean);
+    lines.push(`+ ${totalOther} autres mails (${parts.join(", ")}), rien d'urgent.`);
   }
 
-  sections.push("bonne journée.");
-  return sections.join("\n\n");
+  return lines.join("\n");
 }
 
 export async function generateAndSendDailyBrief(userId: string): Promise<void> {
@@ -157,19 +159,35 @@ export async function generateAndSendDailyBrief(userId: string): Promise<void> {
 
 export async function checkAndSendDailyBriefs(): Promise<void> {
   const users = await prisma.$queryRaw<{
-    id: string; dailyBriefTime: string | null; timezone: string; dailyBriefLastSent: string | null;
+    id: string; dailyBriefTime: string | null; timezone: string | null; dailyBriefLastSent: string | null;
   }[]>`SELECT id, dailyBriefTime, timezone, dailyBriefLastSent FROM User WHERE dailyBriefEnabled = 1 AND dailyBriefTime IS NOT NULL`;
+
+  const now = new Date();
 
   for (const user of users) {
     if (!user.dailyBriefTime) continue;
     const tz = user.timezone ?? "Europe/Paris";
-    const now = new Date();
-    const currentTime = now.toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false });
-    if (currentTime !== user.dailyBriefTime) continue;
-    if (user.dailyBriefLastSent) {
-      const lastSentDate = new Date(user.dailyBriefLastSent).toLocaleDateString("en-CA", { timeZone: tz });
-      if (lastSentDate === now.toLocaleDateString("en-CA", { timeZone: tz })) continue;
+
+    const [th, tm] = user.dailyBriefTime.split(":").map(Number);
+    if (Number.isNaN(th) || Number.isNaN(tm)) {
+      console.warn(`[brief] bad time for ${user.id}: ${user.dailyBriefTime}`);
+      continue;
     }
+    const targetMin = th * 60 + tm;
+
+    // h23 hourCycle avoids the "24:xx" midnight edge case
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now).split(":");
+    const nowMin = Number(parts[0]) * 60 + Number(parts[1]);
+
+    const todayDate = now.toLocaleDateString("en-CA", { timeZone: tz });
+    const sentToday = user.dailyBriefLastSent
+      ? new Date(user.dailyBriefLastSent).toLocaleDateString("en-CA", { timeZone: tz }) === todayDate
+      : false;
+
+    // Send when past the target time, not yet sent today, within a 3h grace window
+    if (sentToday || nowMin < targetMin || nowMin - targetMin > 180) continue;
+
+    console.log(`[brief] firing for ${user.id} (target ${user.dailyBriefTime}, now ${nowMin - targetMin}min past)`);
     await generateAndSendDailyBrief(user.id);
   }
 }

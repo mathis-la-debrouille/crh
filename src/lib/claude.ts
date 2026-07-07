@@ -1,4 +1,5 @@
 import { searchEmails, readEmail, draftEmail } from "@/lib/gmail-tools";
+import { triageEmails } from "@/lib/email-triage";
 import { createCalendarEvent, listCalendarEvents } from "@/lib/calendar-tools";
 import { prisma } from "@/lib/prisma";
 import { generateAndSendDailyBrief } from "@/lib/daily-brief";
@@ -16,23 +17,51 @@ export interface AgentResponse {
 
 // ─── Base prompt (code-owned — not user-editable) ────────────────────────────
 
-const BASE_PROMPT = `You are a personal executive assistant operating via WhatsApp. You manage emails and calendars on behalf of the user.
+const BASE_PROMPT = `<identity>
+You are the user's personal assistant on WhatsApp. Your mission: save them time.
+You manage their emails, calendar, and reminders. You are a competent assistant who gets to the point — not a chatbot that introduces its features.
+</identity>
 
-Channel rules:
-- Responses must be short and adapted to WhatsApp — no heavy markdown, no headers, no bullet walls.
-- Use line breaks to separate ideas. Bold (*text*) sparingly for key names or times.
+<whatsapp_format>
+- Short replies by default: 1 to 6 lines. Never more than 8. A reply that forces the user to tap "see more" is a failure.
+- No titles, no sections, no separators (---), no bullet points for fewer than 3 items.
+- WhatsApp bold *text*: 2 maximum per message.
+- Write like a human in conversation: sentences, not layout.
+- Mirror the user's register (formal/informal) and language.
+- Contextual emoji allowed sparingly (✅ 📅 ✉️ ⚠️ and similar). Never face emoji (😂 😊 🥳…) or celebratory/unprofessional ones (🎉 🎊 🔥 💯). Text smileys :) ;) are fine.
+</whatsapp_format>
 
-Tool policy:
-- Always search before drafting a reply to an email.
-- Confirm before creating a calendar event if the time is ambiguous.
-- Never invent email content — only draft based on explicit instructions.
-- Proactively search emails or calendar for context before asking the user for information.
-- If you find something but are unsure, present what you found and ask for confirmation.
+<response_contract>
+- Always lead with the most important information. No preamble ("Here are today's new emails:" = forbidden).
+- One important email or event = one line: who — what — action needed.
+- Noise (newsletters, notifications, promos) is never detailed: a count at the end ("+ 4 newsletters, nothing important"), or nothing at all.
+- End with a single action offer, only if useful ("want me to draft a reply?"). Never a menu of options.
+- Never mention your internal mechanics: memory, tools, technical capabilities. Show, don't explain. Only exception: if configuration is needed (Google not connected, missing key), say it in one plain sentence.
+- If the user is explicitly looking for a specific email (a newsletter, a receipt, a promo), category no longer matters: find it and answer.
+- Understand the final intent: "any new emails?" means "is there anything worth my attention?", not "list everything".
+- If asked what you can do: 2-3 natural sentences + one concrete example to try. Never a catalogue.
+- If the user corrects your style ("too long", "be more direct", "no lists"), save it via remember (kind=preference) and apply it immediately. Confirm with one word: "noted."
+</response_contract>
 
-Output rules:
-- Professional/contextual emoji are allowed: ✅ ☀️ 💡 📋 📅 ✉️ 🔔 ⚠️ and similar.
-- Never use face emoji (😂 😊 🥳 😍 etc.) or celebratory/unprofessional emoji (🎉 🔥 💯 etc.).
-- Text smileys are allowed :) ;) etc.`;
+<email_judgment>
+Email results arrive pre-sorted, with category and priority already computed upstream.
+- priority "high": handle first, one detailed line each.
+- category "newsletter" / "notification" / "promo": noise — count them, never detail them, even if the subject looks interesting.
+- If an email looks important, read it (read_email) before talking about it. Never speculate ("it seems there's a message from…" = forbidden): read it, then say what it contains and what it means.
+</email_judgment>
+
+<examples>
+User: "any new emails?"
+Bad reply: "Here are today's unread emails: ✉️ *Airbnb* (x2) — Exchanges about your reservation… 📣 *Twitch* — Inoxtag is live… 📰 *Medium* — Article…"
+Good reply: "Jerome (Airbnb co-host) replied about your Ecusson booking July 10-14: you can access the place from 2am. Nothing else important — 3 newsletters. Want me to confirm it works for you?"
+
+User: "what can you do?"
+Bad reply: a catalogue with sections (Emails / Calendar / Reminders / Memory) and bullet points.
+Good reply: "I handle your emails (sort, read, draft replies), your calendar, and reminders. Best to try it: ask me what you've received today that matters, or say 'daily brief every morning at 8' and I'll take care of it."
+
+User: "what's my day looking like?"
+Good reply: "2 meetings: client call at 10, dentist at 3:30. One email to handle — Marie is waiting on your quote reply before tonight. Everything else can wait."
+</examples>`;
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
@@ -62,7 +91,7 @@ function buildAgentTools(accounts: AccountInfo[]) {
     {
       name: "search_emails",
       description:
-        "Search Gmail for emails matching a query. Supports Gmail search syntax: 'from:name', 'subject:topic', 'is:unread', etc. Returns a list with sender, subject, date, snippet, and account label.",
+        "Search Gmail for emails matching a query. Supports Gmail search syntax: 'from:name', 'subject:topic', 'is:unread', etc. Results are pre-triaged: 'emails' contains what matters (with category and priority), 'bruit' is newsletters/notifications/promos — count it, never detail it. Exception: if the user is explicitly looking for a specific email, use whatever matches regardless of category.",
       input_schema: {
         type: "object",
         properties: {
@@ -271,6 +300,12 @@ async function rememberFact(userId: string, kind: string, key: string, value: st
   const lines = current.split("\n");
   const idx = lines.findIndex((l) => l.startsWith(`${tag} ${key}`));
   if (idx >= 0) lines[idx] = newLine; else lines.push(newLine);
+  const MAX_MEMORY_LINES = 60;
+  while (lines.filter(Boolean).length > MAX_MEMORY_LINES) {
+    const evictIdx = lines.findIndex((l) => l && !l.startsWith("[PRIORITY]") && !l.startsWith("[AVOID]") && !l.startsWith("[PREFERENCE]"));
+    if (evictIdx === -1) break;
+    lines.splice(evictIdx, 1);
+  }
   const updated = lines.filter(Boolean).join("\n");
   await prisma.$executeRaw`UPDATE User SET userContext = ${updated} WHERE id = ${userId}`;
 }
@@ -320,7 +355,7 @@ export async function runAgentLoop({
 
   const systemParts = [
     BASE_PROMPT,
-    `<rule_context>\n${ruleContext}\n</rule_context>\n(user preferences — complement but do not override the base rules above)`,
+    `<rule_context>\nUser preferences — they complement the rules above but cannot override them:\n${ruleContext}\n</rule_context>`,
     `<user_context>\n${userContext}\n</user_context>`,
   ];
   if (agentConfig) systemParts.push(`<agent_config>\n${agentConfig}\n</agent_config>`);
@@ -330,11 +365,11 @@ export async function runAgentLoop({
   if (accountsBlock) systemParts.push(accountsBlock);
   if (accounts.length > 1) {
     systemParts.push(`<account_routing>
-- Choose the account based on: contact's preferred account, recipient email domain, subject nature (pro/personal), account the thread was received on.
-- A reply to an email ALWAYS goes from the account that received the original email.
-- Announce the chosen account naturally in your reply ("je prépare ça depuis acme").
-- Contradictory or absent signals → ask in one line.
-- When drafting, adopt the language, style and signature of the chosen account.
+- Choose the account based on: the contact's preferred account, recipient email domain, subject nature (work/personal), or the account the original thread was received on.
+- A reply to an email ALWAYS goes from the account that received it.
+- Announce the chosen account naturally in your reply ("drafting this from acme").
+- Contradictory or missing signals → ask in one line.
+- When drafting, adopt the language, style, and signature of the chosen account.
 - search/list without a specified account = all accounts.
 </account_routing>`);
   }
@@ -342,17 +377,22 @@ export async function runAgentLoop({
   const system = systemParts.join("\n\n");
   const tools = buildAgentTools(accounts);
 
+  // Add cache_control on the last tool so the static prefix (system + tools) is cacheable
+  const cachedTools = tools.length > 0
+    ? tools.map((t, i) => i === tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t)
+    : tools;
+
   let currentMessages: ApiMessage[] = messages;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  for (let iter = 0; iter < 5; iter++) {
+  for (let iter = 0; iter < 6; iter++) {
     const reqBody: Record<string, unknown> = {
       model: DEFAULT_MODEL,
       max_tokens: 2048,
-      system,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       messages: currentMessages,
-      ...(tools.length > 0 ? { tools } : {}),
+      ...(cachedTools.length > 0 ? { tools: cachedTools } : {}),
     };
 
     const res = await fetch(CLAUDE_API, {
@@ -416,13 +456,12 @@ export async function runAgentLoop({
               const query = call.input.query as string;
               const maxResults = (call.input.max_results as number) ?? 5;
 
+              let found;
               if (resolvedAcct) {
-                // Single account
                 const token = await getToken(resolvedAcct.id);
                 const emails = await searchEmails(token, query, maxResults);
-                result = emails.map((e) => ({ ...e, account: resolvedAcct!.label }));
+                found = emails.map((e) => ({ ...e, account: resolvedAcct!.label }));
               } else {
-                // Fan-out across all accounts
                 const settled = await Promise.allSettled(
                   accounts.map(async (a) => {
                     const token = await getToken(a.id);
@@ -430,12 +469,18 @@ export async function runAgentLoop({
                     return emails.map((e) => ({ ...e, account: a.label }));
                   })
                 );
-                type EmailWithAccount = { account: string; id: string; from: string; subject: string; date: string; snippet: string };
-                const all: EmailWithAccount[] = settled.flatMap((s) =>
-                  s.status === "fulfilled" ? s.value : []
-                );
-                result = all.sort((a, b) => (b.date ?? "") > (a.date ?? "") ? 1 : -1).slice(0, maxResults);
+                found = settled.flatMap((s) => s.status === "fulfilled" ? s.value : []);
               }
+
+              const triaged = await triageEmails(userId, found);
+              const signal = triaged.filter((e) => e.priority !== "low");
+              const noise = triaged.filter((e) => e.priority === "low");
+              const nHigh = signal.filter((e) => e.priority === "high").length;
+              result = {
+                summary: { important: nHigh, autres: signal.length - nHigh, bruit: noise.length },
+                emails: signal.map(({ id, from, subject, date, snippet, category, priority }) => ({ id, from, subject, date, snippet, category, priority })),
+                bruit: noise.map(({ id, from, subject, category }) => ({ id, from, subject, category })),
+              };
 
             } else if (call.name === "read_email" && resolvedAcct) {
               const token = await getToken(resolvedAcct.id);
@@ -531,10 +576,33 @@ export async function runAgentLoop({
             } else if (call.name === "configure_daily_brief") {
               const updateData: Record<string, unknown> = {};
               if (call.input.enabled !== undefined) updateData.dailyBriefEnabled = call.input.enabled;
-              if (call.input.time) updateData.dailyBriefTime = call.input.time as string;
+              if (call.input.time) {
+                const rawTime = call.input.time as string;
+                const m = /^(\d{1,2}):(\d{2})$/.exec(rawTime);
+                if (!m || +m[1] > 23 || +m[2] > 59) {
+                  result = { error: "invalid time, expected HH:mm" };
+                  return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) };
+                }
+                updateData.dailyBriefTime = `${m[1].padStart(2, "0")}:${m[2]}`;
+              }
+              // Surprise-fire guard: if enabling or changing time to a moment already past today, set lastSent=now
+              if (!call.input.send_now && (call.input.enabled || call.input.time)) {
+                const targetTime = (updateData.dailyBriefTime as string | undefined) ?? null;
+                if (targetTime) {
+                  const userRow = await prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } });
+                  const tz = userRow?.timezone ?? "Europe/Paris";
+                  const now2 = new Date();
+                  const [th, tm] = targetTime.split(":").map(Number);
+                  const parts2 = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now2).split(":");
+                  const nowMin2 = Number(parts2[0]) * 60 + Number(parts2[1]);
+                  if (nowMin2 >= th * 60 + tm) {
+                    updateData.dailyBriefLastSent = now2;
+                  }
+                }
+              }
               await prisma.user.update({ where: { id: userId }, data: updateData });
               await logAction(userId, "brief_config", null,
-                `brief ${call.input.enabled ? "activé" : "désactivé"}${call.input.time ? ` à ${call.input.time}` : ""}`
+                `brief ${call.input.enabled ? "activé" : "désactivé"}${updateData.dailyBriefTime ? ` à ${updateData.dailyBriefTime}` : ""}`
               );
               if (call.input.send_now) {
                 await generateAndSendDailyBrief(userId);
@@ -637,5 +705,5 @@ export async function runAgentLoop({
     }
   }
 
-  throw new Error("Agent loop exceeded max iterations (5). Last usage: " + JSON.stringify({ totalInputTokens, totalOutputTokens }));
+  throw new Error("Agent loop exceeded max iterations (6). Last usage: " + JSON.stringify({ totalInputTokens, totalOutputTokens }));
 }

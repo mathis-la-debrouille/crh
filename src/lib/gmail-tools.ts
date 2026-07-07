@@ -78,6 +78,9 @@ export interface EmailSummary {
   subject: string;
   date: string;
   snippet: string;
+  labelIds: string[];
+  listUnsubscribe: boolean;
+  precedenceBulk: boolean;
 }
 
 export interface EmailFull extends EmailSummary {
@@ -92,7 +95,7 @@ export async function searchEmails(
 ): Promise<EmailSummary[]> {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
   url.searchParams.set("q", query);
-  url.searchParams.set("maxResults", String(Math.min(maxResults, 10)));
+  url.searchParams.set("maxResults", String(Math.min(maxResults, 25)));
 
   const listRes = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -109,19 +112,24 @@ export async function searchEmails(
   const results = await Promise.all(
     messages.map(async (msg) => {
       const res = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=List-Unsubscribe&metadataHeaders=Precedence`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!res.ok) return null;
       const detail = await res.json();
       const headers: { name: string; value: string }[] = detail.payload?.headers ?? [];
-      const get = (n: string) => headers.find((h) => h.name.toLowerCase() === n)?.value ?? "";
+      const get = (n: string) => headers.find((h) => h.name.toLowerCase() === n.toLowerCase())?.value ?? "";
+      const listUnsub = get("list-unsubscribe");
+      const precedence = get("precedence");
       return {
         id: msg.id,
         from: get("from"),
         subject: get("subject"),
         date: get("date"),
         snippet: detail.snippet ?? "",
+        labelIds: detail.labelIds ?? [],
+        listUnsubscribe: listUnsub.length > 0,
+        precedenceBulk: /bulk|list|junk/i.test(precedence),
       };
     })
   );
@@ -165,6 +173,8 @@ export async function readEmail(accessToken: string, emailId: string): Promise<E
   const headers: { name: string; value: string }[] = data.payload?.headers ?? [];
   const get = (n: string) => headers.find((h) => h.name.toLowerCase() === n)?.value ?? "";
 
+  const listUnsub = get("list-unsubscribe");
+  const precedence = get("precedence");
   return {
     id: emailId,
     from: get("from"),
@@ -172,6 +182,9 @@ export async function readEmail(accessToken: string, emailId: string): Promise<E
     subject: get("subject"),
     date: get("date"),
     snippet: data.snippet ?? "",
+    labelIds: data.labelIds ?? [],
+    listUnsubscribe: listUnsub.length > 0,
+    precedenceBulk: /bulk|list|junk/i.test(precedence),
     body: extractBody(data.payload ?? {}).slice(0, 8000),
   };
 }

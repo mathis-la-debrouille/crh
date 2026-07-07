@@ -8,6 +8,7 @@ import { makeTokenProvider } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
 import { resolveContacts, formatContactsBlock } from "@/lib/contacts";
 import { consumeVerificationCode } from "@/lib/otp";
+import { sanitizeReply } from "@/lib/utils";
 
 const SILENT = new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
 
@@ -106,8 +107,8 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     console.log(`[webhook] first message from userId=${user.id} — sending onboarding`);
 
     const onboardingMessages = [
-      "hi, Excited to work with you :)",
-      "To get started — would you like a daily brief each morning? I can send you a summary of your calendar and emails at a time of your choosing.\n\nReply with a time (e.g. '9am') or 'skip' to set it up later.",
+      "salut :) je suis ton assistant — mails, agenda, rappels.",
+      "tu veux un brief chaque matin (agenda + mails à traiter) ? dis-moi une heure ('8h30') ou 'plus tard'.",
     ];
 
     for (const text of onboardingMessages) {
@@ -262,7 +263,8 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       });
 
       console.log(`[webhook] Claude reply length: ${parsed.message.length}, usage: in=${parsed.usage?.inputTokens} out=${parsed.usage?.outputTokens}`);
-      replyBody = parsed.message || "…";
+      replyBody = sanitizeReply(parsed.message || "…");
+      if (replyBody.length > 900) console.warn(`[webhook] reply over budget: ${replyBody.length} chars`);
       replyUsage = parsed.usage;
     } catch (err) {
       console.error("[claude] error:", err instanceof Error ? err.message : err);

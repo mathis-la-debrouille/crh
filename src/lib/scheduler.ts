@@ -48,5 +48,7 @@ export function startScheduler() {
   runContactSync();
   setInterval(runContactSync, 6 * 60 * 60 * 1000);
 
+  setInterval(() => console.log("[scheduler] alive"), 10 * 60 * 1000);
+
   console.log("[scheduler] started — reminders 30s, briefs 60s, inbox-watch 60s, contact-sync 6h");
 }
