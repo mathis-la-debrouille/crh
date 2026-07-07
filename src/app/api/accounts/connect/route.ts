@@ -17,16 +17,22 @@ function signState(state: string, userId: string): string {
     .digest("hex");
 }
 
+function appUrl(path: string): string {
+  const base = (process.env.NEXTAUTH_URL ?? "http://localhost:3000").replace(/\/$/, "");
+  return `${base}${path}`;
+}
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
-  if (!session?.userId) return NextResponse.redirect(new URL("/signup", req.url));
+  if (!session?.userId) return NextResponse.redirect(appUrl("/signup"));
 
   const state = randomUUID();
   const hmac = signState(state, session.userId);
+  const isProduction = process.env.NODE_ENV === "production";
 
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
-    redirect_uri: `${process.env.NEXTAUTH_URL}/api/accounts/callback`,
+    redirect_uri: appUrl("/api/accounts/callback"),
     response_type: "code",
     access_type: "offline",
     prompt: "select_account consent",
@@ -34,18 +40,12 @@ export async function GET(req: NextRequest) {
     state,
   });
 
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
-  const res = NextResponse.redirect(url);
-
-  // Store state + hmac in cookies (10-min expiry)
+  const res = NextResponse.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
   res.cookies.set("vayt-account-state", state, {
-    httpOnly: true, secure: process.env.NODE_ENV === "production",
-    sameSite: "lax", maxAge: 600, path: "/",
+    httpOnly: true, secure: isProduction, sameSite: "lax", maxAge: 600, path: "/",
   });
   res.cookies.set("vayt-account-hmac", hmac, {
-    httpOnly: true, secure: process.env.NODE_ENV === "production",
-    sameSite: "lax", maxAge: 600, path: "/",
+    httpOnly: true, secure: isProduction, sameSite: "lax", maxAge: 600, path: "/",
   });
-
   return res;
 }

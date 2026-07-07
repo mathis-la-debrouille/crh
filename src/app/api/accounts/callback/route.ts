@@ -10,25 +10,42 @@ function signState(state: string, userId: string): string {
     .digest("hex");
 }
 
-function err(req: NextRequest, code: string): NextResponse {
-  return NextResponse.redirect(new URL(`/dashboard?account_error=${code}`, req.url));
+function appUrl(path: string): string {
+  const base = (process.env.NEXTAUTH_URL ?? "http://localhost:3000").replace(/\/$/, "");
+  return `${base}${path}`;
+}
+
+function err(code: string): NextResponse {
+  return NextResponse.redirect(appUrl(`/dashboard?account_error=${code}`));
+}
+
+function clearCookies(res: NextResponse) {
+  res.cookies.delete("vayt-account-state");
+  res.cookies.delete("vayt-account-hmac");
 }
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
-  if (!session?.userId) return NextResponse.redirect(new URL("/signup", req.url));
+  if (!session?.userId) return NextResponse.redirect(appUrl("/signup"));
 
   const { searchParams } = req.nextUrl;
+
+  // Google sends back ?error=... when something goes wrong (e.g. user cancelled)
+  const googleError = searchParams.get("error");
+  if (googleError) {
+    console.warn(`[accounts/callback] Google error: ${googleError}`);
+    return err(`google_${googleError}`);
+  }
+
   const code = searchParams.get("code");
   const state = searchParams.get("state");
+  if (!code || !state) return err("missing_params");
 
-  if (!code || !state) return err(req, "missing_params");
-
-  // Validate state
+  // Validate CSRF state
   const storedState = req.cookies.get("vayt-account-state")?.value;
   const storedHmac = req.cookies.get("vayt-account-hmac")?.value;
-  if (!storedState || storedState !== state) return err(req, "state");
-  if (!storedHmac || storedHmac !== signState(state, session.userId)) return err(req, "state");
+  if (!storedState || storedState !== state) return err("state_mismatch");
+  if (!storedHmac || storedHmac !== signState(state, session.userId)) return err("state_mismatch");
 
   // Exchange code for tokens
   const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -38,18 +55,22 @@ export async function GET(req: NextRequest) {
       code,
       client_id: process.env.GOOGLE_CLIENT_ID!,
       client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-      redirect_uri: `${process.env.NEXTAUTH_URL}/api/accounts/callback`,
+      redirect_uri: appUrl("/api/accounts/callback"),
       grant_type: "authorization_code",
     }),
   });
-  if (!tokenRes.ok) return err(req, "token_exchange");
+  if (!tokenRes.ok) {
+    const body = await tokenRes.text();
+    console.error(`[accounts/callback] token exchange failed: ${tokenRes.status} ${body}`);
+    return err("token_exchange");
+  }
   const tokens = await tokenRes.json();
 
-  // Fetch email from userinfo
+  // Fetch Google profile
   const infoRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
   });
-  if (!infoRes.ok) return err(req, "userinfo");
+  if (!infoRes.ok) return err("userinfo");
   const info = await infoRes.json();
   const email: string = info.email;
 
@@ -58,7 +79,7 @@ export async function GET(req: NextRequest) {
     where: { email, userId: { not: session.userId } },
   });
   if (conflicting) {
-    const res = err(req, "owned_elsewhere");
+    const res = err("owned_elsewhere");
     clearCookies(res);
     return res;
   }
@@ -67,12 +88,9 @@ export async function GET(req: NextRequest) {
     where: { userId_email: { userId: session.userId, email } },
   });
 
-  const tokenExpiry = tokens.expires_in
-    ? new Date(Date.now() + tokens.expires_in * 1000)
-    : null;
+  const tokenExpiry = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null;
 
   if (existing) {
-    // Reconnect — update tokens, keep everything else (especially label)
     await prisma.emailAccount.update({
       where: { id: existing.id },
       data: {
@@ -83,7 +101,6 @@ export async function GET(req: NextRequest) {
       },
     });
   } else {
-    // New secondary account — derive label from email local-part, deduplicate
     const baseLabel = email.split("@")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 20);
     const existingLabels = (
       await prisma.emailAccount.findMany({ where: { userId: session.userId }, select: { label: true } })
@@ -91,10 +108,9 @@ export async function GET(req: NextRequest) {
 
     let label = baseLabel;
     let suffix = 2;
-    while (existingLabels.includes(label)) { label = `${baseLabel}-${suffix++}`; }
+    while (existingLabels.includes(label)) label = `${baseLabel}-${suffix++}`;
 
     const isFirst = existingLabels.length === 0;
-
     await prisma.emailAccount.create({
       data: {
         userId: session.userId,
@@ -110,14 +126,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const res = NextResponse.redirect(
-    new URL(`/dashboard?account_connected=${encodeURIComponent(email)}`, req.url)
-  );
+  const res = NextResponse.redirect(appUrl(`/dashboard?account_connected=${encodeURIComponent(email)}`));
   clearCookies(res);
   return res;
-}
-
-function clearCookies(res: NextResponse) {
-  res.cookies.delete("vayt-account-state");
-  res.cookies.delete("vayt-account-hmac");
 }
