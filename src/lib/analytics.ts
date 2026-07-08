@@ -208,14 +208,14 @@ export async function getQuality() {
           LOWER(body) LIKE '%refais%'
         )
       GROUP BY DATE(timestamp) ORDER BY day ASC`,
-    // Tool call stats last 30 days
+    // ToolCallLog may not exist yet before migration v3
     prisma.$queryRaw<{ tool: string; total: number; successes: number }[]>`
       SELECT tool,
         COUNT(*) AS total,
         SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS successes
       FROM ToolCallLog
       WHERE createdAt >= datetime('now','-30 days')
-      GROUP BY tool ORDER BY total DESC`,
+      GROUP BY tool ORDER BY total DESC`.catch(() => [] as { tool: string; total: number; successes: number }[]),
   ]);
 
   const qual = overBudgetPct[0];
@@ -267,22 +267,25 @@ export async function getAdoption() {
 // ── Job health ────────────────────────────────────────────────────────────────
 
 export async function getJobHealth() {
-  // Latest run per job
-  const rows = await prisma.$queryRaw<{
-    job: string; status: string; error: string | null; ranAt: string; durationMs: number | null;
-  }[]>`
-    SELECT job, status, error, ranAt, durationMs
-    FROM JobRun
-    WHERE (job, ranAt) IN (SELECT job, MAX(ranAt) FROM JobRun GROUP BY job)
-    ORDER BY job ASC`;
+  try {
+    const rows = await prisma.$queryRaw<{
+      job: string; status: string; error: string | null; ranAt: string; durationMs: number | null;
+    }[]>`
+      SELECT job, status, error, ranAt, durationMs
+      FROM JobRun
+      WHERE (job, ranAt) IN (SELECT job, MAX(ranAt) FROM JobRun GROUP BY job)
+      ORDER BY job ASC`;
 
-  return rows.map((r) => ({
-    job: r.job,
-    status: r.status,
-    error: r.error,
-    ranAt: new Date(r.ranAt),
-    durationMs: r.durationMs != null ? Number(r.durationMs) : null,
-  }));
+    return rows.map((r) => ({
+      job: r.job,
+      status: r.status,
+      error: r.error,
+      ranAt: new Date(r.ranAt),
+      durationMs: r.durationMs != null ? Number(r.durationMs) : null,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 // ── "Worst today" feed ────────────────────────────────────────────────────────

@@ -320,22 +320,25 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   console.log(`[webhook] sending reply (${replyBody.length} chars) to ${fromNumber}`);
   try {
     const replyMsg = await sendWhatsApp(fromNumber, replyBody);
+    const baseData = {
+      userId: user.id,
+      direction: "outbound",
+      body: replyBody,
+      from: toNumber,
+      to: fromNumber,
+      sid: replyMsg.sid,
+      inputTokens: replyUsage?.inputTokens ?? null,
+      outputTokens: replyUsage?.outputTokens ?? null,
+      model: replyUsage?.model ?? null,
+    };
     const outbound = await prisma.whatsAppMessage.create({
       data: {
-        userId: user.id,
-        direction: "outbound",
-        body: replyBody,
-        from: toNumber,
-        to: fromNumber,
-        sid: replyMsg.sid,
-        inputTokens: replyUsage?.inputTokens ?? null,
-        outputTokens: replyUsage?.outputTokens ?? null,
-        model: replyUsage?.model ?? null,
+        ...baseData,
         agentIterations: replyIterations,
         latencyMs: Date.now() - webhookStartMs,
         replyOverBudget: replyBody.length > 900,
       },
-    });
+    }).catch(() => prisma.whatsAppMessage.create({ data: baseData }));
 
     waEmitter.emit("message", {
       id: outbound.id,
