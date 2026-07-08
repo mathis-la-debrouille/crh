@@ -13,7 +13,7 @@ export default withAuth(
 
     // Admin routes: only ADMIN_EMAIL
     if (pathname.startsWith("/admin")) {
-      const adminEmail = process.env.ADMIN_EMAIL ?? "mathis.laurent.3m@gmail.com";
+      const adminEmail = process.env.ADMIN_EMAIL;
       if (token?.email !== adminEmail) {
         return NextResponse.redirect(new URL("/dashboard", req.url));
       }

@@ -4,7 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { normalisePhone } from "@/lib/otp";
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "mathis.laurent.3m@gmail.com";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "";
 
 async function requireAdmin() {
   const session = await getServerSession(authOptions);
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
 
   if (action === "remove") {
     if (!phone) return NextResponse.json({ error: "phone required" }, { status: 400 });
-    await prisma.allowedNumber.delete({ where: { phone: normalisePhone(phone) } }).catch(() => {});
+    await prisma.allowedNumber.delete({ where: { phone: normalisePhone(phone) } }).catch(() => { });
     return NextResponse.json({ ok: true });
   }
 

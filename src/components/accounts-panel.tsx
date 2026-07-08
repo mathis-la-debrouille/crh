@@ -107,7 +107,7 @@ export function AccountsPanel() {
                   <label className="text-xs font-medium text-slate-500">Display name</label>
                   <Input
                     defaultValue={a.displayName ?? ""}
-                    placeholder="Mathis Laurent"
+                    placeholder="John"
                     onBlur={(e) => save(a.id, { displayName: e.target.value || null })}
                   />
                 </div>
@@ -153,7 +153,7 @@ export function AccountsPanel() {
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-[#0f172a] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-ring resize-none font-mono"
                   rows={3}
                   defaultValue={a.signature ?? ""}
-                  placeholder={"Mathis\nCTO, Acme"}
+                  placeholder={"John\nCTO, Acme"}
                   onBlur={(e) => save(a.id, { signature: e.target.value || null })}
                 />
               </div>

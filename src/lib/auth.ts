@@ -3,7 +3,7 @@ import GoogleProvider from "next-auth/providers/google";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "mathis.laurent.3m@gmail.com";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "";
 
 export const authOptions: NextAuthOptions = {
   providers: [
