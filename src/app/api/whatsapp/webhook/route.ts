@@ -151,6 +151,8 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
 
   let replyBody: string;
   let replyUsage: { inputTokens: number; outputTokens: number; model: string } | null = null;
+  let replyIterations: number | null = null;
+  const webhookStartMs = Date.now();
 
   if (claudeApiKey) {
     try {
@@ -301,10 +303,11 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         userId: user.id,
       });
 
-      console.log(`[webhook] Claude reply length: ${parsed.message.length}, usage: in=${parsed.usage?.inputTokens} out=${parsed.usage?.outputTokens}`);
+      console.log(`[webhook] Claude reply length: ${parsed.message.length}, usage: in=${parsed.usage?.inputTokens} out=${parsed.usage?.outputTokens}, iters=${parsed.iterations}`);
       replyBody = sanitizeReply(parsed.message || "…");
       if (replyBody.length > 900) console.warn(`[webhook] reply over budget: ${replyBody.length} chars`);
       replyUsage = parsed.usage;
+      replyIterations = parsed.iterations;
     } catch (err) {
       console.error("[claude] error:", err instanceof Error ? err.message : err);
       replyBody = "erreur technique, réessaie dans un instant.";
@@ -328,6 +331,9 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         inputTokens: replyUsage?.inputTokens ?? null,
         outputTokens: replyUsage?.outputTokens ?? null,
         model: replyUsage?.model ?? null,
+        agentIterations: replyIterations,
+        latencyMs: Date.now() - webhookStartMs,
+        replyOverBudget: replyBody.length > 900,
       },
     });
 

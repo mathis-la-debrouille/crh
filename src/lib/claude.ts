@@ -13,6 +13,7 @@ export interface AgentResponse {
   message: string;
   raw: string;
   usage: { inputTokens: number; outputTokens: number; model: string };
+  iterations: number;
 }
 
 // ─── Base prompt (code-owned — not user-editable) ────────────────────────────
@@ -388,8 +389,10 @@ export async function runAgentLoop({
   let currentMessages: ApiMessage[] = messages;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let completedIter = 0;
 
   for (let iter = 0; iter < 6; iter++) {
+    completedIter = iter + 1;
     const reqBody: Record<string, unknown> = {
       model: DEFAULT_MODEL,
       max_tokens: 2048,
@@ -422,7 +425,7 @@ export async function runAgentLoop({
     if (stopReason === "end_turn") {
       const textBlock = content.find((b): b is TextBlock => b.type === "text");
       const raw = textBlock?.text ?? "";
-      return { message: raw, raw, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, model: DEFAULT_MODEL } };
+      return { message: raw, raw, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, model: DEFAULT_MODEL }, iterations: completedIter };
     }
 
     if (stopReason === "tool_use") {
@@ -700,6 +703,9 @@ export async function runAgentLoop({
             result = { error: err instanceof Error ? err.message : "Tool execution failed" };
           }
           console.log(`[agent] tool ${call.name}:`, JSON.stringify(result).slice(0, 200));
+          const toolSuccess = !(typeof result === "object" && result !== null && "error" in result);
+          const toolErr = !toolSuccess ? (result as { error: string }).error : undefined;
+          prisma.toolCallLog.create({ data: { userId, tool: call.name, success: toolSuccess, errorMsg: toolErr ?? null } }).catch(() => {});
           return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) };
         })
       );

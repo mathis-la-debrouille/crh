@@ -6,6 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AdminWhitelist } from "@/components/admin-whitelist";
 import { AdminClaudeKey } from "@/components/admin-claude-key";
+import { getJobHealth, getWorstToday } from "@/lib/analytics";
 
 const COST_PER_M_IN = 3;    // $3 per million input tokens
 const COST_PER_M_OUT = 15;  // $15 per million output tokens
@@ -35,6 +36,8 @@ export default async function AdminPage() {
   const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
 
   const adminUser = await prisma.user.findUnique({ where: { email: ADMIN_EMAIL }, select: { claudeApiKey: true } });
+
+  const [jobHealth, worstToday] = await Promise.all([getJobHealth(), getWorstToday()]);
 
   const [
     users,
@@ -85,12 +88,18 @@ export default async function AdminPage() {
     }),
   ]);
 
-  // Per-user message counts
+  // Per-user message counts + last inbound
   const msgCountsRaw = await prisma.whatsAppMessage.groupBy({
     by: ["userId"],
     _count: { id: true },
   });
   const msgCounts = Object.fromEntries(msgCountsRaw.map((r) => [r.userId, r._count.id]));
+
+  // Last inbound per user
+  const lastInboundRaw = await prisma.$queryRaw<{ userId: string; lastAt: string }[]>`
+    SELECT userId, MAX(timestamp) AS lastAt FROM WhatsAppMessage
+    WHERE direction='inbound' GROUP BY userId`;
+  const lastInbound = Object.fromEntries(lastInboundRaw.map((r) => [r.userId, new Date(r.lastAt)]));
 
   // Per-user token usage
   const userTokens = await Promise.all(
@@ -136,6 +145,77 @@ export default async function AdminPage() {
           ))}
         </div>
 
+        {/* ── Job health ── */}
+        <Card>
+          <CardHeader><CardTitle>Scheduler health</CardTitle></CardHeader>
+          <CardContent>
+            {jobHealth.length === 0 ? (
+              <p className="text-xs text-slate-400">No job runs recorded yet — will populate after first scheduler tick.</p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {jobHealth.map((j) => (
+                  <div key={j.job} className="flex items-start gap-3 rounded-lg border p-3">
+                    <span className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full ${j.status === "ok" ? "bg-green-400" : "bg-red-400"}`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-mono text-xs font-semibold text-[#0f172a]">{j.job}</p>
+                      {j.error && (
+                        <p className="mt-0.5 truncate text-xs text-red-500">{j.error}</p>
+                      )}
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {timeSince(j.ranAt)}
+                        {j.durationMs != null && ` · ${j.durationMs}ms`}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* ── Worst conversations today ── */}
+        {(worstToday.errors.length > 0 || worstToday.overBudget.length > 0) && (
+          <Card>
+            <CardHeader><CardTitle>Worst conversations today</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              {worstToday.errors.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-red-500">Error replies ({worstToday.errors.length})</p>
+                  <div className="space-y-1">
+                    {worstToday.errors.map((m) => (
+                      <div key={m.id} className="flex items-start gap-3 rounded px-2 py-1.5 hover:bg-slate-50">
+                        <span className="shrink-0 rounded-full bg-red-50 px-2 py-px text-xs font-medium text-red-600">error</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs text-slate-700">{m.body.slice(0, 80)}</p>
+                          <p className="text-xs text-slate-400">{m.userName ?? m.userEmail}</p>
+                        </div>
+                        <span className="shrink-0 text-xs text-slate-300">{timeSince(m.timestamp)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {worstToday.overBudget.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-500">Over-budget replies &gt;900 chars ({worstToday.overBudget.length})</p>
+                  <div className="space-y-1">
+                    {worstToday.overBudget.map((m) => (
+                      <div key={m.id} className="flex items-start gap-3 rounded px-2 py-1.5 hover:bg-slate-50">
+                        <span className="shrink-0 rounded-full bg-amber-50 px-2 py-px text-xs font-medium text-amber-700">{m.bodyLen}c</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs text-slate-700">{m.body.slice(0, 80)}</p>
+                          <p className="text-xs text-slate-400">{m.userName ?? m.userEmail}</p>
+                        </div>
+                        <span className="shrink-0 text-xs text-slate-300">{timeSince(m.timestamp)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* ── Users ── */}
         <Card>
           <CardHeader><CardTitle>Users ({users.length})</CardTitle></CardHeader>
@@ -148,6 +228,7 @@ export default async function AdminPage() {
                     <th className="pb-2 pr-4 font-medium">Phone</th>
                     <th className="pb-2 pr-4 font-medium">Status</th>
                     <th className="pb-2 pr-4 font-medium">Messages</th>
+                    <th className="pb-2 pr-4 font-medium">Last active</th>
                     <th className="pb-2 pr-4 font-medium">Tokens (in/out)</th>
                     <th className="pb-2 pr-4 font-medium">Cost</th>
                     <th className="pb-2 font-medium">Joined</th>
@@ -180,6 +261,9 @@ export default async function AdminPage() {
                           </span>
                         </td>
                         <td className="py-2.5 pr-4">{fmt(msgCounts[u.id] ?? 0)}</td>
+                        <td className="py-2.5 pr-4 text-slate-400">
+                          {lastInbound[u.id] ? timeSince(lastInbound[u.id]) : <span className="text-slate-300">—</span>}
+                        </td>
                         <td className="py-2.5 pr-4">
                           {tok ? `${fmt(tok.inputTokens)} / ${fmt(tok.outputTokens)}` : "—"}
                         </td>

@@ -160,16 +160,48 @@ model Reminder {
 }
 
 model WhatsAppMessage {
-  id           String   @id @default(cuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id])
-  direction    String
-  body         String
-  from         String
-  to           String
-  sid          String?
-  timestamp    DateTime @default(now())
-  inputTokens  Int?
-  outputTokens Int?
-  model        String?
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  direction       String
+  body            String
+  from            String
+  to              String
+  sid             String?
+  timestamp       DateTime @default(now())
+  inputTokens     Int?
+  outputTokens    Int?
+  model           String?
+  agentIterations Int?
+  latencyMs       Int?
+  replyOverBudget Boolean?
+
+  @@index([userId])
+  @@index([timestamp])
+}
+
+model JobRun {
+  id         String   @id @default(cuid())
+  job        String
+  userId     String?
+  status     String
+  error      String?
+  durationMs Int?
+  ranAt      DateTime @default(now())
+
+  @@index([job])
+  @@index([ranAt])
+}
+
+model ToolCallLog {
+  id        String   @id @default(cuid())
+  userId    String
+  tool      String
+  success   Boolean
+  errorMsg  String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([tool])
+  @@index([createdAt])
 }
