@@ -23,6 +23,7 @@ export default async function DashboardPage() {
         googleConnected: true,
         whatsappNumber: true,
         whatsappConnected: true,
+        phoneVerified: true,
         assistantPaused: true,
         dailyBriefEnabled: true,
         dailyBriefTime: true,
@@ -70,7 +71,7 @@ export default async function DashboardPage() {
             connected: googleConnectedCount > 0,
             accountCount: emailAccounts.length,
           }}
-          whatsapp={{ connected: user.whatsappConnected, number: user.whatsappNumber }}
+          whatsapp={{ connected: !!(user.whatsappNumber && user.phoneVerified), number: user.whatsappNumber }}
           twilioNumber={twilioNumber}
           initialPaused={user.assistantPaused}
         />
