@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 
 const NAV_LINKS = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/metrics", label: "Metrics" },
 ];
 
 export function Navbar() {
@@ -45,14 +44,24 @@ export function Navbar() {
                 </Link>
               ))}
               {session.isAdmin && (
-                <Link
-                  href="/admin"
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                    pathname === "/admin" ? "bg-slate-100 text-[#0f172a]" : "text-slate-500 hover:bg-slate-50 hover:text-[#0f172a]"
-                  }`}
-                >
-                  Admin
-                </Link>
+                <>
+                  <Link
+                    href="/metrics"
+                    className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                      pathname === "/metrics" ? "bg-slate-100 text-[#0f172a]" : "text-slate-500 hover:bg-slate-50 hover:text-[#0f172a]"
+                    }`}
+                  >
+                    Metrics
+                  </Link>
+                  <Link
+                    href="/admin"
+                    className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                      pathname === "/admin" ? "bg-slate-100 text-[#0f172a]" : "text-slate-500 hover:bg-slate-50 hover:text-[#0f172a]"
+                    }`}
+                  >
+                    Admin
+                  </Link>
+                </>
               )}
             </nav>
           )}

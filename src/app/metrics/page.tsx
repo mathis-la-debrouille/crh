@@ -24,6 +24,7 @@ function fmtCost(n: number) {
 export default async function MetricsPage() {
   const session = await getServerSession(authOptions);
   if (!session?.userId) redirect("/");
+  if (!session.isAdmin) redirect("/dashboard");
   const userId = session.userId;
 
   const [totalMessages, totalContacts, tokenAgg] = await Promise.all([

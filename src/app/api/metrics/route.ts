@@ -14,6 +14,7 @@ function cost(input: number, output: number) {
 export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session?.userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!session.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const userId = session.userId;
 
   // Totals
