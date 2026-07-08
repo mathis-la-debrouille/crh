@@ -30,6 +30,14 @@ model User {
   // Preferences
   timezone String @default("Europe/Paris")
 
+  // Assistant behavior (user-configurable)
+  assistantPaused Boolean @default(false)
+  tone            String  @default("formal")
+  register        String  @default("vous")
+  language        String  @default("fr")
+  signature       String  @default("")
+  guardrails      String  @default("[]")
+
   // Daily brief
   dailyBriefEnabled  Boolean   @default(false)
   dailyBriefTime     String?

@@ -69,9 +69,15 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     select: {
       id: true,
       status: true,
+      assistantPaused: true,
       ruleContext: true,
       userContext: true,
       timezone: true,
+      tone: true,
+      register: true,
+      language: true,
+      signature: true,
+      guardrails: true,
       dailyBriefEnabled: true,
       dailyBriefTime: true,
       inboxWatchEnabled: true,
@@ -85,6 +91,15 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   // Reject unknown numbers and non-active accounts silently
   if (!user || user.status !== "active") {
     console.warn(`[webhook] rejected — user=${user?.id ?? "unknown"} status=${user?.status ?? "not found"}`);
+    return SILENT;
+  }
+
+  // Pause guard — save message to history but don't reply
+  if (user.assistantPaused) {
+    console.log(`[webhook] assistant paused for userId=${user.id} — skipping reply`);
+    await prisma.whatsAppMessage.create({
+      data: { userId: user.id, direction: "inbound", body, from: fromNumber, to: toNumber, sid },
+    });
     return SILENT;
   }
 
@@ -250,11 +265,31 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       const contactsBlock = formatContactsBlock(resolvedContacts);
       if (contactsBlock) console.log(`[agent] injecting ${resolvedContacts.length} contact(s): ${resolvedContacts.map(c => c.displayName).join(", ")}`);
 
+      // Build behavior block from user settings
+      const guardrailIds: string[] = (() => { try { return JSON.parse(user.guardrails || "[]"); } catch { return []; } })();
+      const guardrailLabels: Record<string, string> = {
+        review_before_send: "Always ask before sending emails",
+        no_calendar_solo: "Never modify calendar without user confirmation",
+        no_promo_reply: "Never reply to newsletters or marketing",
+        no_delete: "Never delete emails or events",
+      };
+      const behaviorLines = [
+        `Tone: ${user.tone === "casual" ? "casual, friendly" : "formal, professional"}`,
+        `Register: ${user.register === "tu" ? "tutoiement (tu)" : "vouvoiement (vous)"}`,
+        `Language for replies: ${user.language === "en" ? "English" : "French"}`,
+        guardrailIds.length > 0
+          ? `Guardrails:\n${guardrailIds.map((g) => `- ${guardrailLabels[g] ?? g}`).join("\n")}`
+          : "",
+        user.signature ? `Default email signature:\n${user.signature}` : "",
+      ].filter(Boolean);
+      const behaviorContext = behaviorLines.join("\n");
+
       console.log(`[webhook] calling Claude — messages: ${messages.length}, accounts: ${accounts.length}`);
       const parsed = await runAgentLoop({
         apiKey: claudeApiKey,
         ruleContext: user.ruleContext,
         userContext: user.userContext ?? "",
+        behaviorContext,
         agentConfig,
         actionsRecentes: actionsBlock,
         focusCourant: focusCourant ?? undefined,

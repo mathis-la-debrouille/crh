@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { generateAndSendDailyBrief } from "@/lib/daily-brief";
+
+const ALLOWED = ["assistantPaused", "tone", "register", "language", "signature", "guardrails", "timezone"] as const;
+type SettingKey = typeof ALLOWED[number];
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -10,33 +12,22 @@ export async function GET() {
 
   const user = await prisma.user.findUnique({
     where: { id: session.userId },
-    select: { dailyBriefEnabled: true, dailyBriefTime: true, dailyBriefLastSent: true, timezone: true },
+    select: { assistantPaused: true, tone: true, register: true, language: true, signature: true, guardrails: true, timezone: true },
   });
-
   return NextResponse.json(user ?? {});
 }
 
-export async function POST(req: NextRequest) {
+export async function PATCH(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await req.json();
-  const { enabled, time, sendNow } = body as {
-    enabled?: boolean;
-    time?: string;
-    sendNow?: boolean;
-  };
-
-  if (sendNow) {
-    await generateAndSendDailyBrief(session.userId);
-    return NextResponse.json({ success: true, sent: true });
-  }
-
+  const body = await req.json().catch(() => ({}));
   const data: Record<string, unknown> = {};
-  if (enabled !== undefined) data.dailyBriefEnabled = enabled;
-  if (time !== undefined) data.dailyBriefTime = time;
-  if (body.timezone !== undefined) data.timezone = body.timezone;
+  for (const key of ALLOWED) {
+    if (key in body) data[key as SettingKey] = body[key];
+  }
+  if (Object.keys(data).length === 0) return NextResponse.json({ error: "No valid fields" }, { status: 400 });
 
   await prisma.user.update({ where: { id: session.userId }, data });
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ ok: true });
 }
