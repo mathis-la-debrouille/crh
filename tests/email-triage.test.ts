@@ -53,6 +53,18 @@ const cases: [string, EmailSummary, Set<string>, string, string][] = [
   ["jobs@meta.com noise subject → notification/low",
     make({ from: "Meta Careers <jobs@meta.com>", subject: "aucune nouvelle offre pour toi" }),
     NONE, "notification", "low"],
+
+  ["CETELEM dossier règlement + listUnsubscribe → transactional/high",
+    make({ from: "CETELEM <noreply@cetelem.fr>", subject: "CETELEM - Votre Dossier N° 44190456649001 - Règlement", listUnsubscribe: true, labelIds: ["CATEGORY_UPDATES"] }),
+    NONE, "transactional", "high"],
+
+  ["règlement européen IA, no co-signal → newsletter/low",
+    make({ from: "Newsletter <news@lalettre.fr>", subject: "Nouveau règlement européen sur l'IA", listUnsubscribe: true }),
+    NONE, "newsletter", "low"],
+
+  ["prélèvement du 15 juillet + listUnsubscribe → transactional/high",
+    make({ from: "Ma Banque <noreply@mabanque.fr>", subject: "Votre prélèvement du 15 juillet", listUnsubscribe: true }),
+    NONE, "transactional", "high"],
 ];
 
 let passed = 0;
