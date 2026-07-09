@@ -5,6 +5,8 @@ import { getConnectedAccounts } from "@/lib/accounts";
 import { triageEmails } from "@/lib/email-triage";
 import { sendWhatsApp } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
+import { CLAUDE_API } from "@/lib/claude";
+import { ADMIN_EMAIL } from "@/lib/auth";
 
 function todayRange(tz: string): { timeMin: string; timeMax: string } {
   const now = new Date();
@@ -22,22 +24,70 @@ function nameOf(from: string): string {
   return from.replace(/<[^>]+>/, "").replace(/"/g, "").trim();
 }
 
-export async function generateBriefText(userId: string): Promise<string> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { timezone: true, userContext: true },
+async function humanizeEmails(
+  emails: Array<{ sender: string; subject: string; snippet: string }>,
+  register: string,
+  apiKey: string,
+): Promise<string[]> {
+  const tutoie = register === "tu";
+  const system =
+    "Tu résumes des emails importants pour un brief matinal WhatsApp. " +
+    `Pour chaque email, génère exactement une phrase courte et naturelle en français (${tutoie ? "tutoiement" : "vouvoiement"}) ` +
+    "décrivant ce que l'expéditeur demande ou annonce. " +
+    "Commence la phrase par le nom de l'expéditeur suivi d'un espace. " +
+    "Ne mentionne pas les numéros de dossier ni les références techniques. " +
+    "Une ligne par email, sans numérotation.";
+
+  const userContent = emails
+    .map((e, i) =>
+      `${i + 1}. De: ${e.sender} | Objet: ${e.subject}${e.snippet ? ` | Extrait: ${e.snippet.slice(0, 120)}` : ""}`
+    )
+    .join("\n");
+
+  const res = await fetch(CLAUDE_API, {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 400,
+      system,
+      messages: [{ role: "user", content: userContent }],
+    }),
   });
 
+  if (!res.ok) return [];
+  const data = await res.json();
+  const text: string = data.content?.[0]?.text ?? "";
+  return text.split("\n").map((l) => l.trim()).filter(Boolean);
+}
+
+export async function generateBriefText(userId: string): Promise<string> {
+  const [user, adminRow] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { timezone: true, userContext: true, register: true },
+    }),
+    prisma.user.findUnique({ where: { email: ADMIN_EMAIL }, select: { claudeApiKey: true } }),
+  ]);
+
   const tz = user?.timezone ?? "Europe/Paris";
+  const register = user?.register ?? "vous";
+  const apiKey = adminRow?.claudeApiKey ?? null;
   const now = new Date();
   const dateStr = now.toLocaleDateString("fr-FR", { timeZone: tz, weekday: "long", day: "numeric", month: "long" });
-  const lines: string[] = [`bonjour. ${dateStr}.`];
+  const possessive = register === "tu" ? "ton" : "votre";
+  const lines: string[] = [`bonjour. ${dateStr}. voici ${possessive} brief.`];
 
   const accounts = await getConnectedAccounts(userId);
   const multiAccount = accounts.length > 1;
 
   // ── Emails — triage and show only high, count the rest ───────────────────
-  let highLines: string[] = [];
+  type HighEmail = { sender: string; subject: string; snippet: string; prefix: string };
+  const highEmails: HighEmail[] = [];
   let normalCount = 0;
   let bruitCount = 0;
 
@@ -57,8 +107,12 @@ export async function generateBriefText(userId: string): Promise<string> {
         const triaged = await triageEmails(userId, emails);
         for (const e of triaged) {
           if (e.priority === "high") {
-            const prefix = multiAccount ? `[${label}] ` : "";
-            highLines.push(`${prefix}*${nameOf(e.from)}* — ${e.subject}`);
+            highEmails.push({
+              sender: nameOf(e.from),
+              subject: e.subject,
+              snippet: e.snippet ?? "",
+              prefix: multiAccount ? `[${label}] ` : "",
+            });
           } else if (e.priority === "normal") {
             normalCount++;
           } else {
@@ -67,8 +121,21 @@ export async function generateBriefText(userId: string): Promise<string> {
         }
       }
 
-      if (highLines.length > 0) {
-        for (const l of highLines.slice(0, 3)) lines.push(l);
+      if (highEmails.length > 0) {
+        const top = highEmails.slice(0, 3);
+        let summaries: string[] = [];
+        if (apiKey) {
+          try {
+            summaries = await humanizeEmails(top, register, apiKey);
+          } catch {
+            summaries = [];
+          }
+        }
+        for (let i = 0; i < top.length; i++) {
+          const e = top[i];
+          const line = summaries[i] ?? `*${e.sender}* — ${e.subject}`;
+          lines.push(`${e.prefix}${line}`);
+        }
       }
     } catch { console.error("[daily-brief] email fetch failed"); }
   }
