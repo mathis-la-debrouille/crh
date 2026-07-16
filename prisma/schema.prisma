@@ -30,6 +30,11 @@ model User {
   // Preferences
   timezone String @default("Europe/Paris")
 
+  // Onboarding state machine
+  onboardingStep  String    @default("new")   // "new" | "profile" | "brief" | "done"
+  writingStyle    String    @default("")
+  styleAnalyzedAt DateTime?
+
   // Assistant behavior (user-configurable)
   assistantPaused Boolean @default(false)
   tone            String  @default("formal")

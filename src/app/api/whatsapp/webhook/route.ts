@@ -10,8 +10,13 @@ import { resolveContacts, formatContactsBlock } from "@/lib/contacts";
 import { consumeVerificationCode } from "@/lib/otp";
 import { sanitizeReply } from "@/lib/utils";
 import { ADMIN_EMAIL } from "@/lib/auth";
+import { analyzeWritingStyle } from "@/lib/style-analysis";
+import { parseTime, pad2 } from "@/lib/onboarding";
 
-const SILENT = new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
+function makeSilent() {
+  return new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
+}
+const SILENT = makeSilent();
 
 export async function POST(req: NextRequest) {
   // ── Twilio signature verification ────────────────────────────────────────
@@ -70,6 +75,8 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       id: true,
       status: true,
       assistantPaused: true,
+      onboardingStep: true,
+      writingStyle: true,
       ruleContext: true,
       userContext: true,
       timezone: true,
@@ -117,36 +124,11 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     timestamp: inbound.timestamp,
   });
 
-  // ── First-ever message → onboarding flow ─────────────────────────────────
-  const inboundCount = await prisma.whatsAppMessage.count({
-    where: { userId: user.id, direction: "inbound" },
-  });
-
-  if (inboundCount === 1) {
-    console.log(`[webhook] first message from userId=${user.id} — sending onboarding`);
-
-    const onboardingMessages = [
-      "salut :) je suis ton assistant — mails, agenda, rappels.",
-      "tu veux un brief chaque matin (agenda + mails à traiter) ? dis-moi une heure ('8h30') ou 'plus tard'.",
-    ];
-
-    for (const text of onboardingMessages) {
-      const sent = await sendWhatsApp(fromNumber, text);
-      await prisma.whatsAppMessage.create({
-        data: {
-          userId: user.id,
-          direction: "outbound",
-          body: text,
-          from: toNumber,
-          to: fromNumber,
-          sid: sent.sid,
-        },
-      });
-    }
-
-    return new NextResponse("<Response></Response>", {
-      headers: { "Content-Type": "text/xml" },
-    });
+  // ── Onboarding state machine ──────────────────────────────────────────────
+  if (user.onboardingStep !== "done") {
+    const onboardResult = await handleOnboarding(user, body, fromNumber, toNumber);
+    if (onboardResult !== null) return onboardResult;
+    // null = fall-through; onboardingStep already set to "done" inside
   }
 
   let replyBody: string;
@@ -291,6 +273,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         apiKey: claudeApiKey,
         ruleContext: user.ruleContext,
         userContext: user.userContext ?? "",
+        writingStyle: user.writingStyle || undefined,
         behaviorContext,
         agentConfig,
         actionsRecentes: actionsBlock,
@@ -356,4 +339,101 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   return new NextResponse("<Response></Response>", {
     headers: { "Content-Type": "text/xml" },
   });
+}
+
+// ── Onboarding state machine ──────────────────────────────────────────────────
+// Returns a NextResponse to halt (SILENT), or null to fall through to the agent.
+
+async function sendAndRecord(
+  userId: string,
+  fromNumber: string,
+  toNumber: string,
+  text: string,
+) {
+  const sent = await sendWhatsApp(fromNumber, text);
+  const msg = await prisma.whatsAppMessage.create({
+    data: { userId, direction: "outbound", body: text, from: toNumber, to: fromNumber, sid: sent.sid },
+  });
+  waEmitter.emit("message", {
+    id: msg.id, direction: "outbound", body: msg.body,
+    from: msg.from, to: msg.to, timestamp: msg.timestamp,
+  });
+}
+
+async function handleOnboarding(
+  user: { id: string; onboardingStep: string; timezone: string | null; userContext: string | null },
+  body: string,
+  fromNumber: string,
+  toNumber: string,
+): Promise<NextResponse | null> {
+  const step = user.onboardingStep;
+
+  if (step === "new") {
+    console.log(`[onboarding] step=new userId=${user.id}`);
+    await sendAndRecord(user.id, fromNumber, toNumber,
+      "salut, moi c'est Vayt. je gère tes mails, ton agenda et tes rappels, directement ici.");
+    await sendAndRecord(user.id, fromNumber, toNumber,
+      "pour écrire comme toi, je vais lire tes 25 derniers mails envoyés et en tirer ton style — salutations, ton, longueur. ils sont analysés une fois pour créer ton profil, c'est tout.");
+    await sendAndRecord(user.id, fromNumber, toNumber,
+      "d'abord : dis-moi qui tu es en une ou deux phrases — ton métier, ton contexte, ce qui compte pour toi.");
+    analyzeWritingStyle(user.id); // fire-and-forget
+    await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "profile" } });
+    return makeSilent();
+  }
+
+  if (step === "profile") {
+    const isSkip = /^(skip|passe|non|plus tard)\.?$/i.test(body.trim());
+    if (!isSkip) {
+      const line = `[PROFILE] ${body.replace(/\n/g, " ").slice(0, 500)}`;
+      const current = user.userContext ?? "";
+      const updated = current ? `${current}\n${line}` : line;
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { userContext: updated, onboardingStep: "brief" },
+      });
+    } else {
+      await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "brief" } });
+    }
+    await sendAndRecord(user.id, fromNumber, toNumber,
+      "noté. dernier réglage : tu veux un brief chaque matin (agenda + mails à traiter) ? dis-moi une heure — '8h30' — ou 'plus tard'.");
+    return makeSilent();
+  }
+
+  if (step === "brief") {
+    const parsed = parseTime(body);
+
+    if (parsed === "skip") {
+      await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "done" } });
+      await sendAndRecord(user.id, fromNumber, toNumber,
+        "ok, tu pourras l'activer quand tu veux ('brief à 8h'). essaie : demande-moi ce que tu as reçu d'important aujourd'hui.");
+      return makeSilent();
+    }
+
+    if (parsed !== null) {
+      const { hours: h, minutes: m } = parsed;
+      const briefTime = `${pad2(h)}:${pad2(m)}`;
+      const updateData: Record<string, unknown> = {
+        onboardingStep: "done",
+        dailyBriefEnabled: true,
+        dailyBriefTime: briefTime,
+      };
+      // Surprise-fire guard: if the time is already past today, mark as sent today
+      const tz = user.timezone ?? "Europe/Paris";
+      const now = new Date();
+      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now).split(":");
+      const nowMin = Number(parts[0]) * 60 + Number(parts[1]);
+      if (nowMin >= h * 60 + m) updateData.dailyBriefLastSent = now;
+
+      await prisma.user.update({ where: { id: user.id }, data: updateData });
+      await sendAndRecord(user.id, fromNumber, toNumber,
+        `parfait, brief à ${briefTime} chaque matin. c'est tout — essaie : demande-moi ce que tu as reçu d'important aujourd'hui.`);
+      return makeSilent();
+    }
+
+    // Neither time nor skip — fall through to agent with step set to "done"
+    await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "done" } });
+    return null;
+  }
+
+  return null;
 }

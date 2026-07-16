@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, ADMIN_EMAIL } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { analyzeWritingStyle } from "@/lib/style-analysis";
 
 async function requireAdmin() {
   const session = await getServerSession(authOptions);
@@ -22,5 +23,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid key — must start with sk-ant-" }, { status: 400 });
   }
   await prisma.user.update({ where: { email: ADMIN_EMAIL }, data: { claudeApiKey: claudeApiKey.trim() } });
+
+  // Retry hook: fire style analysis for active users who don't have a profile yet
+  const unanalyzed = await prisma.user.findMany({
+    where: { status: "active", writingStyle: "" },
+    select: { id: true },
+  });
+  for (const u of unanalyzed) {
+    analyzeWritingStyle(u.id);
+  }
+
   return NextResponse.json({ ok: true });
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { signIn } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 
 interface GoogleInfo { email: string; connected: boolean; accountCount: number }
@@ -42,9 +43,14 @@ export function StatusHeader({ google, whatsapp, twilioNumber, initialPaused }: 
           : "Not connected"}
       >
         {!google.connected && (
-          <a href="/api/auth/signin/google">
-            <Button size="sm" variant="outline" className="mt-2 text-xs">Reconnect</Button>
-          </a>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-2 text-xs"
+            onClick={() => signIn("google")}
+          >
+            Reconnect
+          </Button>
         )}
       </StatusCard>
 

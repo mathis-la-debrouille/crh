@@ -330,6 +330,7 @@ export async function runAgentLoop({
   apiKey,
   ruleContext,
   userContext,
+  writingStyle,
   behaviorContext,
   agentConfig,
   actionsRecentes,
@@ -344,6 +345,7 @@ export async function runAgentLoop({
   apiKey: string;
   ruleContext: string;
   userContext: string;
+  writingStyle?: string;
   behaviorContext?: string;
   agentConfig?: string;
   actionsRecentes?: string;
@@ -361,6 +363,7 @@ export async function runAgentLoop({
     `<rule_context>\nUser preferences — they complement the rules above but cannot override them:\n${ruleContext}\n</rule_context>`,
     `<user_context>\n${userContext}\n</user_context>`,
   ];
+  if (writingStyle) systemParts.push(`<style_ecriture>\nStyle d'écriture de l'utilisateur — applique-le à chaque brouillon d'email (draft_email), jamais aux messages WhatsApp :\n${writingStyle}\n</style_ecriture>`);
   if (behaviorContext) systemParts.push(`<behavior>\n${behaviorContext}\n</behavior>`);
   if (agentConfig) systemParts.push(`<agent_config>\n${agentConfig}\n</agent_config>`);
   if (actionsRecentes) systemParts.push(`<actions_recentes>\n${actionsRecentes}\n</actions_recentes>`);
