@@ -47,6 +47,7 @@ model User {
   dailyBriefEnabled  Boolean   @default(false)
   dailyBriefTime     String?
   dailyBriefLastSent DateTime?
+  briefMemory        String    @default("[]") // JSON array of { key, firstShown } from recent briefs
 
   // Inbox watch (master toggle; per-account flag lives on EmailAccount)
   inboxWatchEnabled      Boolean   @default(false)

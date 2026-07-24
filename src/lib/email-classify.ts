@@ -1,6 +1,6 @@
 import type { EmailSummary } from "@/lib/gmail-tools";
 
-export type EmailCategory = "human" | "transactional" | "notification" | "newsletter" | "promo";
+export type EmailCategory = "human" | "transactional" | "notification" | "newsletter" | "promo" | "invitation";
 export type EmailPriority = "high" | "normal" | "low";
 export interface TriagedEmail extends EmailSummary { category: EmailCategory; priority: EmailPriority; }
 
@@ -35,6 +35,12 @@ export function classifyOne(email: EmailSummary, knownContactEmails: Set<string>
 
   if (knownContactEmails.has(sender))
     return { ...email, category: "human", priority: "high" };
+
+  const isInvite = /^(invitation|invitation mise à jour|updated invitation|annulé : |canceled event)/i.test(email.subject)
+    || sender === "calendar-notification@google.com"
+    || sender.endsWith("@group.calendar.google.com");
+  if (isInvite) return { ...email, category: "invitation", priority: "normal" };
+
   // Money/administrative matters beat bulk-mail markers — banks and credit
   // companies send critical notices with List-Unsubscribe headers.
   if (isCriticalFinancial(text))

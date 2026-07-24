@@ -65,6 +65,10 @@ const cases: [string, EmailSummary, Set<string>, string, string][] = [
   ["prélèvement du 15 juillet + listUnsubscribe → transactional/high",
     make({ from: "Ma Banque <noreply@mabanque.fr>", subject: "Votre prélèvement du 15 juillet", listUnsubscribe: true }),
     NONE, "transactional", "high"],
+
+  ["Invitation (expéditeur inconnu): Mathis x Ledger → invitation/normal",
+    make({ from: "Quentin Ledger <quentin@ledger.com>", subject: "Invitation : Mathis x Ledger" }),
+    NONE, "invitation", "normal"],
 ];
 
 let passed = 0;

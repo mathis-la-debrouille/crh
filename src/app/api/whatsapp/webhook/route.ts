@@ -12,6 +12,7 @@ import { sanitizeReply } from "@/lib/utils";
 import { ADMIN_EMAIL } from "@/lib/auth";
 import { analyzeWritingStyle } from "@/lib/style-analysis";
 import { parseTime, pad2 } from "@/lib/onboarding";
+import { buildStampedMessages } from "@/lib/conversation-history";
 
 function makeSilent() {
   return new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
@@ -138,42 +139,27 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
 
   if (claudeApiKey) {
     try {
+      // Datetime / timezone — needed before history stamping
+      const tz = user.timezone ?? "Europe/Paris";
+      const now = new Date();
+
       // §1 FIX: desc + reverse = 20 most recent messages in chronological order
       const history = await prisma.whatsAppMessage.findMany({
         where: { userId: user.id, id: { not: inbound.id } },
         orderBy: { timestamp: "desc" },
         take: 20,
-        select: { direction: true, body: true },
+        select: { direction: true, body: true, timestamp: true },
       });
       history.reverse();
 
-      // Natural alternating messages — no artificial markers, no bridge turn
-      const messages: { role: "user" | "assistant"; content: string }[] = [];
-      for (const msg of history) {
-        const role = msg.direction === "inbound" ? "user" : "assistant";
-        const lastMsg = messages[messages.length - 1];
-        if (lastMsg?.role === role) {
-          lastMsg.content += `\n${msg.body}`;
-        } else {
-          messages.push({ role, content: msg.body });
-        }
-      }
-      // Current message appended naturally
-      const lastMsg = messages[messages.length - 1];
-      if (lastMsg?.role === "user") {
-        lastMsg.content += `\n${body}`;
-      } else {
-        messages.push({ role: "user", content: body });
-      }
+      // Natural alternating messages — each history line is timestamp-prefixed so the
+      // agent can tell "described in the past" from "true now" (see <regles_temporelles>)
+      const messages = buildStampedMessages(history, body, tz);
 
       // Load accounts + token provider (lazy, cached per request)
       const accounts = await getConnectedAccounts(user.id);
       const getToken = makeTokenProvider();
       const accountsBlock = buildAccountsBlock(accounts);
-
-      // Datetime in system prompt, not in the message
-      const tz = user.timezone ?? "Europe/Paris";
-      const now = new Date();
       const datetimeStr = now.toLocaleString("fr-FR", {
         timeZone: tz,
         weekday: "long",
@@ -284,6 +270,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         accounts,
         getToken,
         userId: user.id,
+        tz,
       });
 
       console.log(`[webhook] Claude reply length: ${parsed.message.length}, usage: in=${parsed.usage?.inputTokens} out=${parsed.usage?.outputTokens}, iters=${parsed.iterations}`);

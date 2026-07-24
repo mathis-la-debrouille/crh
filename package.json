@@ -10,7 +10,7 @@
     "postinstall": "node -e \"require('child_process').spawnSync(process.execPath,['node_modules/.bin/prisma','generate'],{stdio:'inherit',env:{...process.env,DATABASE_URL:'file:./dev.db'}})\"",
     "prisma:generate": "node -e \"require('child_process').spawnSync(process.execPath,['node_modules/.bin/prisma','generate'],{stdio:'inherit',env:{...process.env,DATABASE_URL:'file:./dev.db'}})\"",
     "backfill:accounts": "npx tsx scripts/backfill-email-accounts.ts",
-    "test": "npx tsx tests/email-triage.test.ts"
+    "test": "npx tsx tests/run-all.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

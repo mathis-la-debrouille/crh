@@ -1,5 +1,5 @@
 import { searchEmails } from "@/lib/gmail-tools";
-import { listCalendarEvents } from "@/lib/calendar-tools";
+import { listCalendarEvents, getCalendarIds } from "@/lib/calendar-tools";
 import { getValidAccessToken } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
 import { triageEmails } from "@/lib/email-triage";
@@ -7,6 +7,11 @@ import { sendWhatsApp } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
 import { CLAUDE_API } from "@/lib/claude";
 import { ADMIN_EMAIL } from "@/lib/auth";
+import { extractSenderEmail } from "@/lib/email-classify";
+import {
+  type BriefMemoryEntry, type HighItem, parseBriefMemory,
+  dedupBySender, applyRepeatDetection, updateBriefMemory,
+} from "@/lib/brief-dedup";
 
 function todayRange(tz: string): { timeMin: string; timeMax: string } {
   const now = new Date();
@@ -65,14 +70,18 @@ async function humanizeEmails(
   return text.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
-export async function generateBriefText(userId: string): Promise<string> {
+export async function generateBriefText(
+  userId: string
+): Promise<{ text: string; nextBriefMemory: BriefMemoryEntry[] }> {
   const [user, adminRow] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
-      select: { timezone: true, userContext: true, register: true },
+      select: { timezone: true, userContext: true, register: true, briefMemory: true },
     }),
     prisma.user.findUnique({ where: { email: ADMIN_EMAIL }, select: { claudeApiKey: true } }),
   ]);
+  const briefMemory = parseBriefMemory(user?.briefMemory ?? "[]");
+  let todayKeys: string[] = [];
 
   const tz = user?.timezone ?? "Europe/Paris";
   const register = user?.register ?? "vous";
@@ -86,8 +95,7 @@ export async function generateBriefText(userId: string): Promise<string> {
   const multiAccount = accounts.length > 1;
 
   // ── Emails — triage and show only high, count the rest ───────────────────
-  type HighEmail = { sender: string; subject: string; snippet: string; prefix: string };
-  const highEmails: HighEmail[] = [];
+  const highEmails: HighItem[] = [];
   let normalCount = 0;
   let bruitCount = 0;
 
@@ -109,6 +117,7 @@ export async function generateBriefText(userId: string): Promise<string> {
           if (e.priority === "high") {
             highEmails.push({
               sender: nameOf(e.from),
+              senderEmail: extractSenderEmail(e.from),
               subject: e.subject,
               snippet: e.snippet ?? "",
               prefix: multiAccount ? `[${label}] ` : "",
@@ -121,8 +130,13 @@ export async function generateBriefText(userId: string): Promise<string> {
         }
       }
 
-      if (highEmails.length > 0) {
-        const top = highEmails.slice(0, 3);
+      // Dedup by sender, then flag repeats seen in the last 5 days (kept in memory)
+      const merged = dedupBySender(highEmails);
+      const { ordered, todayKeys: keys } = applyRepeatDetection(merged, briefMemory);
+      todayKeys = keys;
+
+      if (ordered.length > 0) {
+        const top = ordered.slice(0, 3);
         let summaries: string[] = [];
         if (apiKey) {
           try {
@@ -134,7 +148,8 @@ export async function generateBriefText(userId: string): Promise<string> {
         for (let i = 0; i < top.length; i++) {
           const e = top[i];
           const line = summaries[i] ?? `*${e.sender}* — ${e.subject}`;
-          lines.push(`${e.prefix}${line}`);
+          const repeatPrefix = e.isRepeat ? "toujours en attente : " : "";
+          lines.push(`${e.prefix}${repeatPrefix}${line}`);
         }
       }
     } catch { console.error("[daily-brief] email fetch failed"); }
@@ -147,7 +162,8 @@ export async function generateBriefText(userId: string): Promise<string> {
       const allEventSets = await Promise.allSettled(
         accounts.map(async (a) => {
           const token = await getValidAccessToken(a.id);
-          const events = await listCalendarEvents(token, { timeMin, timeMax, maxResults: 10 });
+          const calendars = await getCalendarIds(token, a.id);
+          const events = await listCalendarEvents(token, { timeMin, timeMax, maxResults: 10, tz, calendars });
           return { label: a.label, events };
         })
       );
@@ -165,7 +181,8 @@ export async function generateBriefText(userId: string): Promise<string> {
           const isAllDay = !e.start?.includes("T");
           const time = isAllDay ? "journée" : formatTime(e.start, tz);
           const acct = multiAccount ? ` (${e.accountLabel})` : "";
-          return `${time} ${e.summary}${acct}`;
+          const cal = e.calendar ? ` (${e.calendar})` : "";
+          return `${time} ${e.summary}${acct}${cal}`;
         });
         lines.push(`agenda : ${parts.join(", ")}.`);
       }
@@ -208,7 +225,8 @@ export async function generateBriefText(userId: string): Promise<string> {
     lines.push(`+ ${totalOther} autres mails (${parts.join(", ")}), rien d'urgent.`);
   }
 
-  return lines.join("\n");
+  const nextBriefMemory = updateBriefMemory(briefMemory, todayKeys);
+  return { text: lines.join("\n"), nextBriefMemory };
 }
 
 export async function generateAndSendDailyBrief(userId: string): Promise<void> {
@@ -218,9 +236,13 @@ export async function generateAndSendDailyBrief(userId: string): Promise<void> {
   });
   if (!user?.whatsappNumber || !user.dailyBriefEnabled) return;
 
-  const message = await generateBriefText(userId);
+  const { text: message, nextBriefMemory } = await generateBriefText(userId);
   await sendWhatsApp(user.whatsappNumber, message);
-  await prisma.$executeRaw`UPDATE User SET dailyBriefLastSent = ${new Date().toISOString()} WHERE id = ${userId}`;
+  await prisma.$executeRaw`
+    UPDATE User
+    SET dailyBriefLastSent = ${new Date().toISOString()}, briefMemory = ${JSON.stringify(nextBriefMemory)}
+    WHERE id = ${userId}
+  `;
   console.log(`[daily-brief] sent to ${user.whatsappNumber}`);
 }
 

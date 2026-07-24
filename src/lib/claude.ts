@@ -1,6 +1,6 @@
 import { searchEmails, readEmail, draftEmail } from "@/lib/gmail-tools";
 import { triageEmails } from "@/lib/email-triage";
-import { createCalendarEvent, listCalendarEvents } from "@/lib/calendar-tools";
+import { createCalendarEvent, listCalendarEvents, getCalendarIds } from "@/lib/calendar-tools";
 import { prisma } from "@/lib/prisma";
 import { generateAndSendDailyBrief } from "@/lib/daily-brief";
 import { upsertContact } from "@/lib/contacts";
@@ -28,7 +28,7 @@ You manage their emails, calendar, and reminders. You are a competent assistant 
 - No titles, no sections, no separators (---), no bullet points for fewer than 3 items.
 - WhatsApp bold *text*: 2 maximum per message.
 - Write like a human in conversation: sentences, not layout.
-- Mirror the user's register (formal/informal) and language.
+- Registre : par défaut, tutoie. Passe au vouvoiement uniquement si l'utilisateur te vouvoie. (Il t'écrit sur WhatsApp — c'est une conversation, pas un courrier.)
 - Contextual emoji allowed sparingly (✅ 📅 ✉️ ⚠️ and similar). Never face emoji (😂 😊 🥳…) or celebratory/unprofessional ones (🎉 🎊 🔥 💯). Text smileys :) ;) are fine.
 </whatsapp_format>
 
@@ -42,6 +42,9 @@ You manage their emails, calendar, and reminders. You are a competent assistant 
 - Understand the final intent: "any new emails?" means "is there anything worth my attention?", not "list everything".
 - If asked what you can do: 2-3 natural sentences + one concrete example to try. Never a catalogue.
 - If the user corrects your style ("too long", "be more direct", "no lists"), save it via remember (kind=preference) and apply it immediately. Confirm with one word: "noted."
+- Si l'utilisateur insiste après ta mise en garde (« fais-le », « fais ce que je t'ai dit »), exécute immédiatement du mieux possible, sans re-négocier ni commenter.
+- Ne décris JAMAIS tes limites techniques (« mes outils », « la recherche ne me permet pas ») : livre ce que tu as, complète si besoin par d'autres recherches, et c'est tout.
+- Ne suggère JAMAIS d'aller voir dans Gmail, Google Calendar ou ailleurs : tu ES l'accès du user à ses mails et son agenda.
 </response_contract>
 
 <email_judgment>
@@ -49,7 +52,16 @@ Email results arrive pre-sorted, with category and priority already computed ups
 - priority "high": handle first, one detailed line each.
 - category "newsletter" / "notification" / "promo": noise — count them, never detail them, even if the subject looks interesting.
 - If an email looks important, read it (read_email) before talking about it. Never speculate ("it seems there's a message from…" = forbidden): read it, then say what it contains and what it means.
+- Une invitation d'agenda (category "invitation") est déjà ajoutée automatiquement à l'agenda par Google. Ne propose JAMAIS de la "créer" ou de l'"ajouter" — vérifie l'agenda avec list_calendar_events et confirme le créneau ('c'est dans ton agenda mardi 17h30-18h15'). N'utilise jamais create_calendar_event pour un événement reçu par invitation.
 </email_judgment>
+
+<regles_temporelles>
+- L'historique de conversation est horodaté [jour JJ/MM HH:mm]. Tout ce qui date de plus de quelques heures décrit le PASSÉ, pas l'état actuel.
+- Ne JAMAIS affirmer qu'un rendez-vous a lieu ("ce soir", "demain", "à 17h30") depuis la mémoire de conversation ou un email : vérifie d'abord avec list_calendar_events. L'agenda est la seule source de vérité sur les événements.
+- Une date relative dans un email ("ce soir", "demain", "lundi prochain") se réfère à la DATE D'ENVOI de cet email, pas à aujourd'hui. Convertis toujours en date absolue avant d'en parler ("l'entretien était mardi 21").
+- Entre minuit et 6h du matin, "ce soir" est ambigu : utilise des dates absolues.
+- Si une info d'un vieux message contredit l'agenda ou la boîte mail actuelle, l'agenda/la boîte gagne.
+</regles_temporelles>
 
 <examples>
 User: "any new emails?"
@@ -62,6 +74,9 @@ Good reply: "I handle your emails (sort, read, draft replies), your calendar, an
 
 User: "what's my day looking like?"
 Good reply: "2 meetings: client call at 10, dentist at 3:30. One email to handle — Marie is waiting on your quote reply before tonight. Everything else can wait."
+
+User : « fais ce que je t'ai dit »
+Bonne réponse : commence par « ok — » et tutoie. Jamais de « vous » avec un utilisateur qui te tutoie.
 </examples>`;
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
@@ -97,7 +112,7 @@ function buildAgentTools(accounts: AccountInfo[]) {
         type: "object",
         properties: {
           query: { type: "string", description: "Gmail search query" },
-          max_results: { type: "integer", description: "Max results (default 5, max 10)" },
+          max_results: { type: "integer", description: "Max results (default 5, max 25)" },
           ...accountParamOptional,
         },
         required: ["query"],
@@ -163,7 +178,7 @@ function buildAgentTools(accounts: AccountInfo[]) {
     {
       name: "create_calendar_event",
       description:
-        "Create a new event in Google Calendar. Dates must be ISO 8601 local time. Timezone: Europe/Paris unless told otherwise.",
+        "Create a new event in Google Calendar. Dates must be ISO 8601 local time. Timezone: Europe/Paris unless told otherwise. Do NOT use for events the user was invited to by email — those are already on the calendar.",
       input_schema: {
         type: "object",
         properties: {
@@ -341,6 +356,7 @@ export async function runAgentLoop({
   accounts,
   getToken,
   userId,
+  tz,
 }: {
   apiKey: string;
   ruleContext: string;
@@ -356,7 +372,9 @@ export async function runAgentLoop({
   accounts: AccountInfo[];
   getToken: (accountId: string) => Promise<string>;
   userId: string;
+  tz?: string;
 }): Promise<AgentResponse> {
+  const userTz = tz ?? "Europe/Paris";
 
   const systemParts = [
     BASE_PROMPT,
@@ -393,6 +411,9 @@ export async function runAgentLoop({
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let completedIter = 0;
+  // Per-loop dedup: an email id already returned once (across searches in this same
+  // request) comes back as a stub — saves tokens and stops "results repeat" confusion.
+  const seenEmailIds = new Set<string>();
 
   for (let iter = 0; iter < 6; iter++) {
     completedIter = iter + 1;
@@ -485,10 +506,19 @@ export async function runAgentLoop({
               const signal = triaged.filter((e) => e.priority !== "low");
               const noise = triaged.filter((e) => e.priority === "low");
               const nHigh = signal.filter((e) => e.priority === "high").length;
+              const dedupOrKeep = <T extends { id: string }>(e: T): T | { id: string; duplicate: true } => {
+                if (seenEmailIds.has(e.id)) return { id: e.id, duplicate: true };
+                seenEmailIds.add(e.id);
+                return e;
+              };
               result = {
                 summary: { important: nHigh, autres: signal.length - nHigh, bruit: noise.length },
-                emails: signal.map(({ id, from, subject, date, snippet, category, priority }) => ({ id, from, subject, date, snippet, category, priority })),
-                bruit: noise.map(({ id, from, subject, category }) => ({ id, from, subject, category })),
+                emails: signal
+                  .map(({ id, from, subject, date, snippet, category, priority }) => ({ id, from, subject, date, snippet, category, priority }))
+                  .map(dedupOrKeep),
+                bruit: noise
+                  .map(({ id, from, subject, category }) => ({ id, from, subject, category }))
+                  .map(dedupOrKeep),
               };
 
             } else if (call.name === "read_email" && resolvedAcct) {
@@ -527,22 +557,25 @@ export async function runAgentLoop({
               result = draft;
 
             } else if (call.name === "list_calendar_events" && accounts.length > 0) {
-              const params = {
+              const baseParams = {
                 timeMin: call.input.time_min as string | undefined,
                 timeMax: call.input.time_max as string | undefined,
                 maxResults: call.input.max_results as number | undefined,
                 query: call.input.query as string | undefined,
+                tz: userTz,
               };
 
               if (resolvedAcct) {
                 const token = await getToken(resolvedAcct.id);
-                const events = await listCalendarEvents(token, params);
+                const calendars = await getCalendarIds(token, resolvedAcct.id);
+                const events = await listCalendarEvents(token, { ...baseParams, calendars });
                 result = events.map((e) => ({ ...e, account: resolvedAcct!.label }));
               } else {
                 const settled = await Promise.allSettled(
                   accounts.map(async (a) => {
                     const token = await getToken(a.id);
-                    const events = await listCalendarEvents(token, params);
+                    const calendars = await getCalendarIds(token, a.id);
+                    const events = await listCalendarEvents(token, { ...baseParams, calendars });
                     return events.map((e) => ({ ...e, account: a.label }));
                   })
                 );
@@ -560,6 +593,7 @@ export async function runAgentLoop({
                 endDatetime: call.input.end_datetime as string,
                 description: call.input.description as string | undefined,
                 location: call.input.location as string | undefined,
+                timezone: userTz,
               });
               await logAction(
                 userId, "event", event.id ?? null,
