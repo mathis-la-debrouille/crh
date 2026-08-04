@@ -85,6 +85,10 @@ function SignupInner() {
     signIn("google", { callbackUrl: "/dashboard" });
   }
 
+  function connectMicrosoft() {
+    signIn("azure-ad", { callbackUrl: "/dashboard" });
+  }
+
   const stepIndex = { phone: 0, waiting: 1, google: 2 };
 
   return (
@@ -178,11 +182,14 @@ function SignupInner() {
                 Number verified
               </div>
               <div className="space-y-1 text-left">
-                <p className="text-sm font-medium text-[#0f172a]">Connect your Google account</p>
-                <p className="text-xs text-slate-400">To access Gmail and Calendar.</p>
+                <p className="text-sm font-medium text-[#0f172a]">Connect your email</p>
+                <p className="text-xs text-slate-400">To access your inbox and calendar.</p>
               </div>
               <Button onClick={connectGoogle} className="w-full">
                 Continue with Google
+              </Button>
+              <Button onClick={connectMicrosoft} variant="outline" className="w-full">
+                Continue with Microsoft
               </Button>
             </div>
           )}
@@ -190,11 +197,12 @@ function SignupInner() {
 
         <p className="text-xs text-slate-400">
           Already have an account?{" "}
-          <button
-            onClick={() => signIn("google", { callbackUrl: "/dashboard" })}
-            className="underline hover:text-slate-600"
-          >
-            Sign in
+          <button onClick={connectGoogle} className="underline hover:text-slate-600">
+            Sign in with Google
+          </button>
+          {" "}or{" "}
+          <button onClick={connectMicrosoft} className="underline hover:text-slate-600">
+            Microsoft
           </button>
         </p>
       </div>

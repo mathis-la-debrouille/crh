@@ -1,5 +1,4 @@
-import { searchEmails } from "@/lib/gmail-tools";
-import { listCalendarEvents, getCalendarIds } from "@/lib/calendar-tools";
+import { searchEmails, listCalendarEvents, getCalendarIds } from "@/lib/providers";
 import { getValidAccessToken } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
 import { triageEmails } from "@/lib/email-triage";
@@ -104,7 +103,7 @@ export async function generateBriefText(
       const allEmailResults = await Promise.allSettled(
         accounts.map(async (a) => {
           const token = await getValidAccessToken(a.id);
-          const emails = await searchEmails(token, "in:inbox newer_than:1d -from:me", 20);
+          const emails = await searchEmails(a.provider, token, "in:inbox newer_than:1d -from:me", 20);
           return { label: a.label, emails };
         })
       );
@@ -162,8 +161,8 @@ export async function generateBriefText(
       const allEventSets = await Promise.allSettled(
         accounts.map(async (a) => {
           const token = await getValidAccessToken(a.id);
-          const calendars = await getCalendarIds(token, a.id);
-          const events = await listCalendarEvents(token, { timeMin, timeMax, maxResults: 10, tz, calendars });
+          const calendars = await getCalendarIds(a.provider, token, a.id);
+          const events = await listCalendarEvents(a.provider, token, { timeMin, timeMax, maxResults: 10, tz }, calendars);
           return { label: a.label, events };
         })
       );

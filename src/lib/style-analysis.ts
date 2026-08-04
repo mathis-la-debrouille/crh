@@ -1,4 +1,4 @@
-import { searchEmails, readEmail } from "@/lib/gmail-tools";
+import { searchEmails, readEmail } from "@/lib/providers";
 import { makeTokenProvider } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
 import { prisma } from "@/lib/prisma";
@@ -31,7 +31,8 @@ export async function analyzeWritingStyle(userId: string): Promise<void> {
       return;
     }
 
-    const summaries = await searchEmails(token, "in:sent -to:me newer_than:180d", 25);
+    const provider = accounts[0].provider;
+    const summaries = await searchEmails(provider, token, "in:sent -to:me newer_than:180d", 25);
     if (summaries.length === 0) return;
 
     const bodies: string[] = [];
@@ -39,7 +40,7 @@ export async function analyzeWritingStyle(userId: string): Promise<void> {
       const batch = summaries.slice(i, i + 5);
       const results = await Promise.allSettled(
         batch.map(async (s) => {
-          const full = await readEmail(token, s.id);
+          const full = await readEmail(provider, token, s.id);
           return stripQuoted(full.body ?? "");
         })
       );

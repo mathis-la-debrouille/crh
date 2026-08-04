@@ -1,6 +1,5 @@
-import { searchEmails, readEmail, draftEmail } from "@/lib/gmail-tools";
+import { searchEmails, readEmail, draftEmail, createCalendarEvent, listCalendarEvents, getCalendarIds } from "@/lib/providers";
 import { triageEmails } from "@/lib/email-triage";
-import { createCalendarEvent, listCalendarEvents, getCalendarIds } from "@/lib/calendar-tools";
 import { prisma } from "@/lib/prisma";
 import { generateAndSendDailyBrief } from "@/lib/daily-brief";
 import { upsertContact } from "@/lib/contacts";
@@ -489,13 +488,13 @@ export async function runAgentLoop({
               let found;
               if (resolvedAcct) {
                 const token = await getToken(resolvedAcct.id);
-                const emails = await searchEmails(token, query, maxResults);
+                const emails = await searchEmails(resolvedAcct.provider, token, query, maxResults);
                 found = emails.map((e) => ({ ...e, account: resolvedAcct!.label }));
               } else {
                 const settled = await Promise.allSettled(
                   accounts.map(async (a) => {
                     const token = await getToken(a.id);
-                    const emails = await searchEmails(token, query, maxResults);
+                    const emails = await searchEmails(a.provider, token, query, maxResults);
                     return emails.map((e) => ({ ...e, account: a.label }));
                   })
                 );
@@ -523,7 +522,7 @@ export async function runAgentLoop({
 
             } else if (call.name === "read_email" && resolvedAcct) {
               const token = await getToken(resolvedAcct.id);
-              result = await readEmail(token, call.input.email_id as string);
+              result = await readEmail(resolvedAcct.provider, token, call.input.email_id as string);
 
             } else if (call.name === "draft_email" && resolvedAcct) {
               const token = await getToken(resolvedAcct.id);
@@ -532,7 +531,7 @@ export async function runAgentLoop({
               if (resolvedAcct.signature && !body.trimEnd().endsWith(resolvedAcct.signature.trimEnd())) {
                 body += `\n\n${resolvedAcct.signature}`;
               }
-              const draft = await draftEmail(token, {
+              const draft = await draftEmail(resolvedAcct.provider, token, {
                 to: call.input.to as string,
                 subject: call.input.subject as string,
                 body,
@@ -567,15 +566,15 @@ export async function runAgentLoop({
 
               if (resolvedAcct) {
                 const token = await getToken(resolvedAcct.id);
-                const calendars = await getCalendarIds(token, resolvedAcct.id);
-                const events = await listCalendarEvents(token, { ...baseParams, calendars });
+                const calendars = await getCalendarIds(resolvedAcct.provider, token, resolvedAcct.id);
+                const events = await listCalendarEvents(resolvedAcct.provider, token, baseParams, calendars);
                 result = events.map((e) => ({ ...e, account: resolvedAcct!.label }));
               } else {
                 const settled = await Promise.allSettled(
                   accounts.map(async (a) => {
                     const token = await getToken(a.id);
-                    const calendars = await getCalendarIds(token, a.id);
-                    const events = await listCalendarEvents(token, { ...baseParams, calendars });
+                    const calendars = await getCalendarIds(a.provider, token, a.id);
+                    const events = await listCalendarEvents(a.provider, token, baseParams, calendars);
                     return events.map((e) => ({ ...e, account: a.label }));
                   })
                 );
@@ -587,7 +586,7 @@ export async function runAgentLoop({
 
             } else if (call.name === "create_calendar_event" && resolvedAcct) {
               const token = await getToken(resolvedAcct.id);
-              const event = await createCalendarEvent(token, {
+              const event = await createCalendarEvent(resolvedAcct.provider, token, {
                 summary: call.input.summary as string,
                 startDatetime: call.input.start_datetime as string,
                 endDatetime: call.input.end_datetime as string,

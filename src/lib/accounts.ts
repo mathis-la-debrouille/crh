@@ -6,6 +6,7 @@ export interface AccountInfo {
   label: string;
   isPrimary: boolean;
   connected: boolean;
+  provider: string;
   displayName: string | null;
   signature: string | null;
   language: string | null;
@@ -39,7 +40,7 @@ export async function getConnectedAccounts(userId: string): Promise<AccountInfo[
   const rows = await prisma.emailAccount.findMany({
     where: { userId, connected: true },
     select: {
-      id: true, email: true, label: true, isPrimary: true, connected: true,
+      id: true, email: true, label: true, isPrimary: true, connected: true, provider: true,
       displayName: true, signature: true, language: true, styleNotes: true, workContext: true,
     },
     orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],

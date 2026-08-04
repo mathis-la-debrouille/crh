@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { refreshMicrosoftToken } from "@/lib/microsoft";
 
 async function refreshToken(
   refreshTok: string,
@@ -49,14 +50,17 @@ async function refreshToken(
   return tokens.access_token as string;
 }
 
-// Primary: token management per EmailAccount row
+// Primary: token management per EmailAccount row — provider-aware. Google and
+// Microsoft accounts are refreshed through their own token endpoints, but every
+// caller (webhook, daily-brief, scheduler jobs) just calls this the same way.
 export async function getValidAccessToken(accountId: string): Promise<string> {
   const rows = await prisma.$queryRaw<{
+    provider: string;
     accessToken: string | null;
     refreshToken: string | null;
     tokenExpiry: string | null;
   }[]>`
-    SELECT accessToken, refreshToken, tokenExpiry
+    SELECT provider, accessToken, refreshToken, tokenExpiry
     FROM EmailAccount WHERE id = ${accountId} LIMIT 1
   `;
 
@@ -70,7 +74,9 @@ export async function getValidAccessToken(accountId: string): Promise<string> {
 
   if (!acct.refreshToken) throw new Error("Token expired and no refresh token. Please sign in again.");
 
-  return refreshToken(acct.refreshToken, accountId);
+  return acct.provider === "microsoft"
+    ? refreshMicrosoftToken(acct.refreshToken, accountId)
+    : refreshToken(acct.refreshToken, accountId);
 }
 
 // Per-request token cache — call once per webhook, pass getToken to all tool calls

@@ -1,4 +1,4 @@
-import { searchEmails } from "@/lib/gmail-tools";
+import { searchEmails } from "@/lib/providers";
 import { getValidAccessToken } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
 import { triageEmails } from "@/lib/email-triage";
@@ -49,6 +49,7 @@ export async function checkInboxForUser(userId: string): Promise<void> {
       : Math.floor((now.getTime() - intervalMs) / 1000);
 
     const emails = await searchEmails(
+      acct.provider,
       accessToken,
       `after:${since} -from:me is:unread in:inbox`,
       10

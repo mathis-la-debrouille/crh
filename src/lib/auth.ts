@@ -1,9 +1,15 @@
 import { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import AzureADProvider from "next-auth/providers/azure-ad";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "";
+
+// Maps a NextAuth account.provider id to our internal EmailAccount.provider value.
+function toInternalProvider(nextAuthProvider: string): "google" | "microsoft" {
+  return nextAuthProvider === "azure-ad" ? "microsoft" : "google";
+}
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -26,6 +32,16 @@ export const authOptions: NextAuthOptions = {
         },
       },
     }),
+    AzureADProvider({
+      clientId: process.env.AZURE_AD_CLIENT_ID!,
+      clientSecret: process.env.AZURE_AD_CLIENT_SECRET!,
+      tenantId: process.env.AZURE_AD_TENANT_ID,
+      authorization: {
+        params: {
+          scope: "openid email profile offline_access User.Read Mail.Read Mail.ReadWrite Calendars.ReadWrite",
+        },
+      },
+    }),
   ],
   callbacks: {
     async signIn({ user, account }) {
@@ -33,8 +49,9 @@ export const authOptions: NextAuthOptions = {
 
       const email = user.email;
       const tokenExpiry = account.expires_at ? new Date(account.expires_at * 1000) : null;
+      const providerName = toInternalProvider(account.provider);
 
-      console.log(`[auth] signIn: email=${email}`);
+      console.log(`[auth] signIn: email=${email} provider=${providerName}`);
 
       // ── 1. Primary account: existing active user ─────────────────────────────
       const primaryUser = await prisma.user.findUnique({
@@ -49,10 +66,14 @@ export const authOptions: NextAuthOptions = {
           data: {
             name: user.name,
             image: user.image,
-            googleAccessToken: account.access_token,
-            googleRefreshToken: account.refresh_token ?? undefined,
-            googleTokenExpiry: tokenExpiry,
-            googleConnected: true,
+            // Legacy User.google* columns — backward compat, Google only. EmailAccount
+            // below is the authoritative, provider-agnostic copy for both providers.
+            ...(providerName === "google" ? {
+              googleAccessToken: account.access_token,
+              googleRefreshToken: account.refresh_token ?? undefined,
+              googleTokenExpiry: tokenExpiry,
+              googleConnected: true,
+            } : {}),
           },
         });
         await prisma.emailAccount.upsert({
@@ -62,13 +83,14 @@ export const authOptions: NextAuthOptions = {
             refreshToken: account.refresh_token ?? undefined,
             tokenExpiry,
             connected: true,
+            provider: providerName,
           },
           create: {
             userId: primaryUser.id,
             email,
             label: "principal",
             isPrimary: true,
-            provider: "google",
+            provider: providerName,
             connected: true,
             accessToken: account.access_token,
             refreshToken: account.refresh_token ?? null,
@@ -117,10 +139,12 @@ export const authOptions: NextAuthOptions = {
           data: {
             name: user.name,
             image: user.image,
-            googleAccessToken: account.access_token,
-            googleRefreshToken: account.refresh_token ?? undefined,
-            googleTokenExpiry: tokenExpiry,
-            googleConnected: true,
+            ...(providerName === "google" ? {
+              googleAccessToken: account.access_token,
+              googleRefreshToken: account.refresh_token ?? undefined,
+              googleTokenExpiry: tokenExpiry,
+              googleConnected: true,
+            } : {}),
             status: "active",
             whatsappNumber: otp.phone,
             phoneVerified: true,
@@ -133,13 +157,14 @@ export const authOptions: NextAuthOptions = {
             refreshToken: account.refresh_token ?? undefined,
             tokenExpiry,
             connected: true,
+            provider: providerName,
           },
           create: {
             userId: primaryUser.id,
             email,
             label: "principal",
             isPrimary: true,
-            provider: "google",
+            provider: providerName,
             connected: true,
             accessToken: account.access_token,
             refreshToken: account.refresh_token ?? null,
@@ -163,15 +188,19 @@ export const authOptions: NextAuthOptions = {
       }
       await prisma.otpCode.update({ where: { id: otp.id }, data: { expiresAt: new Date() } });
 
+      const googleLegacyFields = providerName === "google" ? {
+        googleAccessToken: account.access_token,
+        googleRefreshToken: account.refresh_token ?? undefined,
+        googleTokenExpiry: tokenExpiry,
+        googleConnected: true,
+      } : {};
+
       const newUser = await prisma.user.upsert({
         where: { email },
         update: {
           name: user.name,
           image: user.image,
-          googleAccessToken: account.access_token,
-          googleRefreshToken: account.refresh_token ?? undefined,
-          googleTokenExpiry: tokenExpiry,
-          googleConnected: true,
+          ...googleLegacyFields,
           status: "active",
           whatsappNumber: otp.phone,
           phoneVerified: true,
@@ -180,10 +209,7 @@ export const authOptions: NextAuthOptions = {
           email,
           name: user.name,
           image: user.image,
-          googleAccessToken: account.access_token,
-          googleRefreshToken: account.refresh_token,
-          googleTokenExpiry: tokenExpiry,
-          googleConnected: true,
+          ...googleLegacyFields,
           status: "active",
           whatsappNumber: otp.phone,
           phoneVerified: true,
@@ -198,13 +224,14 @@ export const authOptions: NextAuthOptions = {
           tokenExpiry,
           connected: true,
           isPrimary: true,
+          provider: providerName,
         },
         create: {
           userId: newUser.id,
           email,
           label: "principal",
           isPrimary: true,
-          provider: "google",
+          provider: providerName,
           connected: true,
           accessToken: account.access_token,
           refreshToken: account.refresh_token ?? null,

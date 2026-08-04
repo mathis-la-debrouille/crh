@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   const accounts = await prisma.emailAccount.findMany({
     where: { userId: session.userId },
     select: {
-      id: true, email: true, label: true, isPrimary: true, connected: true,
+      id: true, email: true, label: true, isPrimary: true, connected: true, provider: true,
       displayName: true, signature: true, language: true, styleNotes: true,
       workContext: true, inboxWatchEnabled: true,
     },
@@ -89,7 +89,10 @@ export async function DELETE(req: NextRequest) {
     data: { connected: false, accessToken: null, refreshToken: null, tokenExpiry: null },
   });
 
-  if (account.accessToken) {
+  // Best-effort revoke — Google supports a direct token-revoke endpoint; Microsoft
+  // doesn't expose an equivalent for confidential-client refresh tokens, so the soft
+  // disconnect above (clearing stored tokens) is what actually matters there.
+  if (account.accessToken && account.provider === "google") {
     fetch(`https://oauth2.googleapis.com/revoke?token=${account.accessToken}`, { method: "POST" })
       .catch(() => {});
   }

@@ -11,6 +11,7 @@ interface Account {
   label: string;
   isPrimary: boolean;
   connected: boolean;
+  provider: string;
   displayName: string | null;
   signature: string | null;
   language: string | null;
@@ -81,6 +82,9 @@ export function AccountsPanel() {
             <span className="flex-1 min-w-0">
               <span className="text-sm font-medium text-[#0f172a]">{a.label}</span>
               <span className="ml-2 text-xs text-slate-400">{a.email}</span>
+            </span>
+            <span className="shrink-0 rounded-full bg-slate-100 px-2 py-px text-xs font-medium text-slate-500">
+              {a.provider === "microsoft" ? "Microsoft" : "Google"}
             </span>
             {a.isPrimary && (
               <span className="shrink-0 rounded-full bg-blue-50 px-2 py-px text-xs font-medium text-blue-600">primary</span>
@@ -192,13 +196,22 @@ export function AccountsPanel() {
         </div>
       ))}
 
-      <Button
-        variant="outline"
-        className="w-full"
-        onClick={() => window.location.href = "/api/accounts/connect"}
-      >
-        + Add Google account
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          className="flex-1"
+          onClick={() => window.location.href = "/api/accounts/connect"}
+        >
+          + Add Google account
+        </Button>
+        <Button
+          variant="outline"
+          className="flex-1"
+          onClick={() => window.location.href = "/api/accounts/connect-microsoft"}
+        >
+          + Add Microsoft account
+        </Button>
+      </div>
     </div>
   );
 }

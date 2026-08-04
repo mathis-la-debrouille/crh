@@ -1,4 +1,4 @@
-import { searchEmails, readEmail } from "@/lib/gmail-tools";
+import { searchEmails, readEmail } from "@/lib/providers";
 import { getValidAccessToken } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
 import { upsertContact } from "@/lib/contacts";
@@ -16,7 +16,7 @@ export async function syncContactsFromSent(userId: string): Promise<void> {
       continue;
     }
 
-    const sent = await searchEmails(accessToken, "in:sent -to:me", 50);
+    const sent = await searchEmails(acct.provider, accessToken, "in:sent -to:me", 50);
     if (sent.length === 0) continue;
 
     const sample = sent.slice(0, 10);
@@ -24,7 +24,7 @@ export async function syncContactsFromSent(userId: string): Promise<void> {
 
     for (const m of sample) {
       try {
-        const full = await readEmail(accessToken, m.id);
+        const full = await readEmail(acct.provider, accessToken, m.id);
         if (!full) continue;
         const toHeader = full.to ?? "";
         const toEmails = toHeader.match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? [];
