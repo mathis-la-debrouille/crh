@@ -30,10 +30,10 @@ export function FooterLinks() {
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1 text-xs text-muted-foreground">
         <button
           onClick={() => window.open("/api/user/export", "_blank")}
-          className="hover:text-slate-600 hover:underline"
+          className="hover:text-foreground hover:underline"
         >
           Exporter mes données
         </button>
@@ -41,7 +41,7 @@ export function FooterLinks() {
         <button
           onClick={() => disconnect("google")}
           disabled={disconnecting === "google"}
-          className="hover:text-slate-600 hover:underline disabled:opacity-50"
+          className="hover:text-foreground hover:underline disabled:opacity-50"
         >
           {disconnecting === "google" ? "Déconnexion…" : "Déconnecter Google"}
         </button>
@@ -49,7 +49,7 @@ export function FooterLinks() {
         <button
           onClick={() => disconnect("whatsapp")}
           disabled={disconnecting === "whatsapp"}
-          className="hover:text-slate-600 hover:underline disabled:opacity-50"
+          className="hover:text-foreground hover:underline disabled:opacity-50"
         >
           {disconnecting === "whatsapp" ? "Déconnexion…" : "Déconnecter WhatsApp"}
         </button>
@@ -67,11 +67,11 @@ export function FooterLinks() {
           onClick={() => !deleting && setShowDeleteModal(false)}
         >
           <div
-            className="w-full max-w-sm rounded-xl border border-red-100 bg-white p-5 shadow-lg"
+            className="w-full max-w-sm rounded-2xl border border-red-100 bg-white p-5 shadow-lg"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="text-xs font-medium uppercase tracking-wide text-red-600">Danger zone</p>
-            <p className="mt-2 text-sm text-slate-600">
+            <p className="font-display text-xs font-semibold uppercase tracking-wide text-red-600">Danger zone</p>
+            <p className="mt-2 text-sm text-muted-foreground">
               Supprime définitivement ton compte, tous tes messages, contacts et l&apos;historique de l&apos;agent.
               Cette action est irréversible.
             </p>

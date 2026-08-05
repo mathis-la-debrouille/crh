@@ -40,16 +40,16 @@ export function ActivityFeed({ actions }: { actions: Action[] }) {
       </CardHeader>
       <CardContent>
         {recent.length === 0 ? (
-          <p className="py-4 text-center text-sm text-slate-400">
+          <p className="py-4 text-center text-sm text-muted-foreground">
             Aucune action encore — demande quelque chose à Vayt.
           </p>
         ) : (
           <div className="space-y-0.5">
             {recent.map((a) => (
-              <div key={a.id} className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-slate-50 transition-colors">
+              <div key={a.id} className="flex items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors hover:bg-secondary">
                 <span className="shrink-0 text-sm">{KIND_ICON[a.kind] ?? "•"}</span>
-                <p className="flex-1 min-w-0 truncate text-sm text-[#0f172a]">{a.summary}</p>
-                <span className="shrink-0 text-xs text-slate-300 whitespace-nowrap">{timeSince(a.createdAt)}</span>
+                <p className="flex-1 min-w-0 truncate text-sm text-foreground">{a.summary}</p>
+                <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground/70">{timeSince(a.createdAt)}</span>
               </div>
             ))}
           </div>

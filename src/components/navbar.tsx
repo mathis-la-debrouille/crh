@@ -22,11 +22,13 @@ export function Navbar() {
     .slice(0, 2);
 
   return (
-    <header className="border-b border-slate-200 bg-white">
+    <header className="border-b border-border bg-white">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
-            <span className="text-xl font-bold text-[#0f172a]">Vayt AI</span>
+            <span className="font-display text-xl font-bold text-foreground">
+              Vayt<span className="text-primary">.</span>
+            </span>
           </div>
           {session?.user && (
             <nav className="hidden items-center gap-1 sm:flex">
@@ -34,10 +36,10 @@ export function Navbar() {
                 <Link
                   key={l.href}
                   href={l.href}
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={`rounded-full px-3 py-1.5 font-display text-sm font-medium transition-colors ${
                     pathname === l.href
-                      ? "bg-slate-100 text-[#0f172a]"
-                      : "text-slate-500 hover:bg-slate-50 hover:text-[#0f172a]"
+                      ? "bg-foreground text-primary"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   }`}
                 >
                   {l.label}
@@ -47,16 +49,16 @@ export function Navbar() {
                 <>
                   <Link
                     href="/metrics"
-                    className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                      pathname === "/metrics" ? "bg-slate-100 text-[#0f172a]" : "text-slate-500 hover:bg-slate-50 hover:text-[#0f172a]"
+                    className={`rounded-full px-3 py-1.5 font-display text-sm font-medium transition-colors ${
+                      pathname === "/metrics" ? "bg-foreground text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
                     }`}
                   >
                     Metrics
                   </Link>
                   <Link
                     href="/admin"
-                    className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                      pathname === "/admin" ? "bg-slate-100 text-[#0f172a]" : "text-slate-500 hover:bg-slate-50 hover:text-[#0f172a]"
+                    className={`rounded-full px-3 py-1.5 font-display text-sm font-medium transition-colors ${
+                      pathname === "/admin" ? "bg-foreground text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
                     }`}
                   >
                     Admin
@@ -70,12 +72,12 @@ export function Navbar() {
         {session?.user && (
           <div className="flex items-center gap-3">
             <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium text-[#0f172a]">{session.user.name}</p>
-              <p className="text-xs text-slate-500">{session.user.email}</p>
+              <p className="text-sm font-medium text-foreground">{session.user.name}</p>
+              <p className="text-xs text-muted-foreground">{session.user.email}</p>
             </div>
             <Avatar className="h-9 w-9">
               <AvatarImage src={session.user.image ?? undefined} />
-              <AvatarFallback className="bg-blue-100 text-blue-700 text-sm font-semibold">
+              <AvatarFallback className="bg-primary/15 text-sm font-semibold text-foreground">
                 {initials}
               </AvatarFallback>
             </Avatar>

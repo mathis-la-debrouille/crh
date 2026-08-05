@@ -68,39 +68,39 @@ export function AccountsPanel() {
   return (
     <div className="space-y-3">
       {toast && (
-        <div className="rounded-lg bg-slate-900 px-4 py-2 text-sm text-white">{toast}</div>
+        <div className="rounded-full bg-foreground px-4 py-2 text-sm text-white">{toast}</div>
       )}
 
       {accounts.map((a) => (
-        <div key={a.id} className="rounded-lg border border-slate-200">
+        <div key={a.id} className="rounded-2xl border border-border">
           {/* Row */}
           <button
             onClick={() => setExpanded(expanded === a.id ? null : a.id)}
-            className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50"
+            className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-secondary/60 rounded-2xl"
           >
-            <span className={`h-2 w-2 shrink-0 rounded-full ${a.connected ? "bg-green-400" : "bg-slate-300"}`} />
+            <span className={`h-2 w-2 shrink-0 rounded-full ${a.connected ? "bg-emerald-500" : "bg-muted-foreground/30"}`} />
             <span className="flex min-w-0 flex-1 items-baseline gap-2">
-              <span className="shrink-0 text-sm font-medium text-[#0f172a]">{a.label}</span>
-              <span className="truncate text-xs text-slate-400">{a.email}</span>
+              <span className="shrink-0 text-sm font-medium text-foreground">{a.label}</span>
+              <span className="truncate text-xs text-muted-foreground">{a.email}</span>
             </span>
-            <span className="shrink-0 rounded-full bg-slate-100 px-2 py-px text-xs font-medium text-slate-500">
+            <span className="shrink-0 rounded-full bg-secondary px-2 py-px font-display text-xs font-medium text-foreground/70">
               {a.provider === "microsoft" ? "Microsoft" : "Google"}
             </span>
             {a.isPrimary && (
-              <span className="shrink-0 rounded-full bg-blue-50 px-2 py-px text-xs font-medium text-blue-600">primary</span>
+              <span className="shrink-0 rounded-full bg-primary/20 px-2 py-px font-display text-xs font-medium text-foreground">primary</span>
             )}
             {!a.connected && (
               <span className="shrink-0 rounded-full bg-red-50 px-2 py-px text-xs font-medium text-red-500">disconnected</span>
             )}
-            <span className="text-slate-300 text-xs">{expanded === a.id ? "▲" : "▼"}</span>
+            <span className="text-xs text-muted-foreground/60">{expanded === a.id ? "▲" : "▼"}</span>
           </button>
 
           {/* Expanded editor */}
           {expanded === a.id && (
-            <div className="border-t border-slate-100 px-4 py-4 space-y-4">
+            <div className="space-y-4 border-t border-border px-4 py-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-500">Label</label>
+                  <label className="text-xs font-medium text-muted-foreground">Label</label>
                   <Input
                     defaultValue={a.label}
                     placeholder="perso"
@@ -108,7 +108,7 @@ export function AccountsPanel() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-500">Display name</label>
+                  <label className="text-xs font-medium text-muted-foreground">Display name</label>
                   <Input
                     defaultValue={a.displayName ?? ""}
                     placeholder="John"
@@ -118,9 +118,9 @@ export function AccountsPanel() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-500">Work context</label>
+                <label className="text-xs font-medium text-muted-foreground">Work context</label>
                 <textarea
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-[#0f172a] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  className="w-full resize-none rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-3 focus:ring-primary/20 focus:border-primary"
                   rows={2}
                   defaultValue={a.workContext ?? ""}
                   placeholder="CTO @ Acme — B2B SaaS, team of 12"
@@ -130,9 +130,9 @@ export function AccountsPanel() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-500">Language</label>
+                  <label className="text-xs font-medium text-muted-foreground">Language</label>
                   <select
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-[#0f172a]"
+                    className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground"
                     defaultValue={a.language ?? "fr"}
                     onChange={(e) => save(a.id, { language: e.target.value })}
                   >
@@ -142,7 +142,7 @@ export function AccountsPanel() {
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-500">Style notes</label>
+                  <label className="text-xs font-medium text-muted-foreground">Style notes</label>
                   <Input
                     defaultValue={a.styleNotes ?? ""}
                     placeholder="concis, tutoiement"
@@ -152,9 +152,9 @@ export function AccountsPanel() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-500">Signature</label>
+                <label className="text-xs font-medium text-muted-foreground">Signature</label>
                 <textarea
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-[#0f172a] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-ring resize-none font-mono"
+                  className="w-full resize-none rounded-xl border border-input bg-background px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-3 focus:ring-primary/20 focus:border-primary"
                   rows={3}
                   defaultValue={a.signature ?? ""}
                   placeholder={"John\nCTO, Acme"}
@@ -163,7 +163,7 @@ export function AccountsPanel() {
               </div>
 
               <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground/80">
                   <input
                     type="checkbox"
                     defaultChecked={a.inboxWatchEnabled}
@@ -173,7 +173,7 @@ export function AccountsPanel() {
                 </label>
 
                 <div className="flex items-center gap-2">
-                  {saving === a.id && <span className="text-xs text-slate-400">Saving…</span>}
+                  {saving === a.id && <span className="text-xs text-muted-foreground">Saving…</span>}
                   {!a.isPrimary && (
                     <Button variant="outline" size="sm" onClick={() => makePrimary(a.id)}>
                       Make primary

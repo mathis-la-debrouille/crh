@@ -51,7 +51,7 @@ export function DashboardShell({ whatsapp, accountsCount, initialPaused, brief, 
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base">Comptes mail</CardTitle>
-                <span className="text-xs text-slate-400">{accountsCount} connecté{accountsCount > 1 ? "s" : ""}</span>
+                <span className="text-xs text-muted-foreground">{accountsCount} connecté{accountsCount > 1 ? "s" : ""}</span>
               </div>
             </CardHeader>
             <CardContent>

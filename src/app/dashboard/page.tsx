@@ -39,11 +39,11 @@ export default async function DashboardPage() {
   const claudeReady = !!admin?.claudeApiKey;
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-secondary">
       <Navbar />
       <main className="mx-auto max-w-6xl space-y-4 px-4 py-6 sm:px-6">
         {!claudeReady && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
             L&apos;assistant IA n&apos;est pas encore configuré — contacte ton administrateur.
           </div>
         )}

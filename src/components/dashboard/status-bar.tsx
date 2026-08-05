@@ -31,31 +31,33 @@ export function StatusBar({ whatsapp, accountsCount, initialPaused, brief, onBri
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm shadow-sm">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-border bg-white px-4 py-2.5 text-sm shadow-sm">
       {/* WhatsApp */}
       <div className="flex items-center gap-1.5">
-        <span className={`h-2 w-2 shrink-0 rounded-full ${whatsapp.connected ? "bg-green-400" : "bg-slate-300"}`} />
+        <span className={`h-2 w-2 shrink-0 rounded-full ${whatsapp.connected ? "bg-emerald-500" : "bg-muted-foreground/30"}`} />
         {whatsapp.connected && whatsapp.number ? (
-          <span className="text-slate-600">{maskPhone(whatsapp.number)}</span>
+          <span className="text-foreground/80">{maskPhone(whatsapp.number)}</span>
         ) : (
-          <a href="/signup" className="text-blue-600 hover:underline">Connecter WhatsApp</a>
+          <a href="/signup" className="font-medium text-foreground underline decoration-primary decoration-2 underline-offset-2 hover:text-primary">
+            Connecter WhatsApp
+          </a>
         )}
       </div>
 
-      <span className="text-slate-200">·</span>
+      <span className="text-border">·</span>
 
       {/* Accounts — anchor-scrolls to the accounts card in the sidebar */}
       <a href="#accounts-card" className="flex items-center gap-1.5 hover:underline">
-        <span className={`h-2 w-2 shrink-0 rounded-full ${accountsCount > 0 ? "bg-green-400" : "bg-slate-300"}`} />
-        <span className="text-slate-600">{accountsCount} compte{accountsCount > 1 ? "s" : ""} mail</span>
+        <span className={`h-2 w-2 shrink-0 rounded-full ${accountsCount > 0 ? "bg-emerald-500" : "bg-muted-foreground/30"}`} />
+        <span className="text-foreground/80">{accountsCount} compte{accountsCount > 1 ? "s" : ""} mail</span>
       </a>
 
-      <span className="text-slate-200">·</span>
+      <span className="text-border">·</span>
 
       {/* Brief chip — settings-as-chat: never opens a form, just primes the input */}
       <button
         onClick={onBriefChipClick}
-        className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-200"
+        className="rounded-full bg-secondary px-2.5 py-1 font-display text-xs font-semibold text-foreground/80 transition-colors hover:bg-primary hover:text-primary-foreground"
       >
         {brief.enabled && brief.time ? `Brief ${brief.time.replace(":", "h")}` : "Brief off"}
       </button>
@@ -64,13 +66,13 @@ export function StatusBar({ whatsapp, accountsCount, initialPaused, brief, onBri
         <button
           onClick={togglePause}
           disabled={toggling}
-          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-display text-xs font-semibold transition-colors ${
             paused
               ? "bg-amber-100 text-amber-700 hover:bg-amber-200"
-              : "bg-green-100 text-green-700 hover:bg-green-200"
+              : "bg-foreground text-primary hover:bg-foreground/85"
           }`}
         >
-          <span className={`h-1.5 w-1.5 rounded-full ${paused ? "bg-amber-500" : "bg-green-500"}`} />
+          <span className={`h-1.5 w-1.5 rounded-full ${paused ? "bg-amber-500" : "bg-primary"}`} />
           {toggling ? "…" : paused ? "En pause" : "Actif"}
         </button>
       </div>
