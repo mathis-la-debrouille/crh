@@ -14,6 +14,7 @@ const KIND_ICON: Record<string, string> = {
   send: "📤",
   event: "📅",
   reminder: "⏰",
+  reminder_deleted: "🗑️",
   brief: "☀️",
   brief_config: "☀️",
   remember: "🧠",

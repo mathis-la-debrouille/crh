@@ -187,6 +187,19 @@ function buildAgentTools(accounts: AccountInfo[]) {
       },
     },
     {
+      name: "delete_reminder",
+      description:
+        "Cancel a pending reminder. Call when the user asks to delete, cancel, or remove a reminder they previously set. " +
+        "Fuzzy-matched against pending (not yet sent) reminders by message text.",
+      input_schema: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "The reminder's message or a description of it" },
+        },
+        required: ["message"],
+      },
+    },
+    {
       name: "list_calendar_events",
       description:
         "List events from the calendar. timeMin/timeMax are ISO 8601 local time; defaults to start of today. " +
@@ -695,6 +708,22 @@ export async function runAgentLoop({
                   `rappel "${reminder.message}" à ${scheduledAt.toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}`
                 );
                 result = { id: reminder.id, scheduledAt: reminder.scheduledAt };
+              }
+
+            } else if (call.name === "delete_reminder") {
+              const query = call.input.message as string;
+              const pending = await prisma.reminder.findMany({
+                where: { userId, sent: false },
+                select: { id: true, message: true },
+              });
+              const match = findMatchingLoop(query, null, pending.map((r) => ({ id: r.id, title: r.message, counterpart: null })));
+
+              if (!match) {
+                result = { error: "reminder not found", pending_reminders: pending.map((r) => r.message) };
+              } else {
+                await prisma.reminder.delete({ where: { id: match.id } });
+                await logAction(userId, "reminder_deleted", match.id, `rappel annulé : ${match.title}`);
+                result = { success: true, id: match.id };
               }
 
             } else if (call.name === "configure_daily_brief") {
