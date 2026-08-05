@@ -3,18 +3,10 @@ import twilio from "twilio";
 import { sendWhatsApp, sendTypingIndicator } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
 import { waEmitter } from "@/lib/whatsapp-events";
-import { runAgentLoop, buildAccountsBlock } from "@/lib/claude";
-import { makeTokenProvider } from "@/lib/google";
-import { getConnectedAccounts } from "@/lib/accounts";
-import { resolveContacts, formatContactsBlock } from "@/lib/contacts";
+import { handleUserMessage } from "@/lib/agent-runner";
 import { consumeVerificationCode } from "@/lib/otp";
-import { sanitizeReply } from "@/lib/utils";
-import { ADMIN_EMAIL } from "@/lib/auth";
 import { analyzeWritingStyle } from "@/lib/style-analysis";
 import { isRequestLike, nextMorning930 } from "@/lib/onboarding";
-import { buildStampedMessages } from "@/lib/conversation-history";
-import { detectRegister } from "@/lib/register";
-import { buildOpenLoopsBlock } from "@/lib/open-loops";
 
 function makeSilent() {
   return new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
@@ -71,32 +63,20 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     return SILENT;
   }
 
-  const [user, adminRow] = await Promise.all([
-    prisma.user.findFirst({
+  // Only what the webhook itself needs — the agent-invocation section (tone,
+  // language, accounts, brief status, etc.) is loaded by handleUserMessage.
+  const user = await prisma.user.findFirst({
     where: { whatsappNumber: fromNumber },
     select: {
       id: true,
       status: true,
       assistantPaused: true,
       onboardingStep: true,
-      writingStyle: true,
-      ruleContext: true,
-      userContext: true,
       timezone: true,
-      tone: true,
-      register: true,
-      language: true,
-      signature: true,
-      guardrails: true,
+      userContext: true,
       dailyBriefEnabled: true,
-      dailyBriefTime: true,
-      inboxWatchEnabled: true,
-      inboxWatchIntervalMins: true,
     },
-  }),
-    prisma.user.findUnique({ where: { email: ADMIN_EMAIL }, select: { claudeApiKey: true } }),
-  ]);
-  const claudeApiKey = adminRow?.claudeApiKey ?? null;
+  });
 
   // Reject unknown numbers and non-active accounts silently
   if (!user || user.status !== "active") {
@@ -125,6 +105,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     from: inbound.from,
     to: inbound.to,
     timestamp: inbound.timestamp,
+    channel: "whatsapp",
   });
 
   sendTypingIndicator(sid); // fire-and-forget, best-effort — never blocks the reply
@@ -139,185 +120,26 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     // null = fall-through; onboardingStep already advanced inside
   }
 
-  let replyBody: string;
-  let replyUsage: { inputTokens: number; outputTokens: number; model: string } | null = null;
-  let replyIterations: number | null = null;
+  // ── Agent invocation — same brain as web chat (src/lib/agent-runner.ts) ───
   const webhookStartMs = Date.now();
+  // Twilio's typing indicator auto-expires after 25s — re-send every ~20s
+  // while the agent is still working on a reply.
+  const typingInterval = setInterval(() => sendTypingIndicator(sid), 20000);
 
-  if (claudeApiKey) {
-    let typingInterval: ReturnType<typeof setInterval> | undefined;
-    try {
-      // Datetime / timezone — needed before history stamping
-      const tz = user.timezone ?? "Europe/Paris";
-      const now = new Date();
-
-      // §1 FIX: desc + reverse = 20 most recent messages in chronological order
-      const history = await prisma.whatsAppMessage.findMany({
-        where: { userId: user.id, id: { not: inbound.id } },
-        orderBy: { timestamp: "desc" },
-        take: 20,
-        select: { direction: true, body: true, timestamp: true },
-      });
-      history.reverse();
-
-      // Natural alternating messages — each history line is timestamp-prefixed so the
-      // agent can tell "described in the past" from "true now" (see <regles_temporelles>)
-      const messages = buildStampedMessages(history, body, tz);
-
-      // Load accounts + token provider (lazy, cached per request)
-      const accounts = await getConnectedAccounts(user.id);
-      const getToken = makeTokenProvider();
-      const accountsBlock = buildAccountsBlock(accounts);
-      const datetimeStr = now.toLocaleString("fr-FR", {
-        timeZone: tz,
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-
-      // Recent actions log — so Claude remembers what it created
-      const recentActions = await prisma.agentAction.findMany({
-        where: { userId: user.id },
-        orderBy: { createdAt: "desc" },
-        take: 8,
-      });
-      const sortedActions = [...recentActions].reverse();
-      const actionsBlock = sortedActions.length
-        ? sortedActions
-            .map((a) => `- ${a.kind}${a.refId ? ` (${a.refId})` : ""} : ${a.summary}`)
-            .join("\n")
-        : "aucune";
-
-      // The most recent action = focus courant (for pronoun resolution: "le", "ça", "réessaie")
-      const lastAction = sortedActions[sortedActions.length - 1];
-      const accountLabel = lastAction?.accountEmail
-        ? (accounts.find((a) => a.email === lastAction.accountEmail)?.label ?? lastAction.accountEmail)
-        : null;
-      const focusCourant = lastAction
-        ? `${lastAction.kind}${lastAction.refId ? ` (${lastAction.refId})` : ""}${accountLabel ? ` [${accountLabel}]` : ""} : ${lastAction.summary}`
-        : null;
-
-      // Open loops — durable working memory of ongoing subjects (who owes what, since when)
-      const openLoopsRaw = await prisma.$queryRaw<{ title: string; createdAt: string; dueAt: string | null }[]>`
-        SELECT title, createdAt, dueAt FROM OpenLoop
-        WHERE userId = ${user.id} AND status = 'open'
-        ORDER BY (dueAt IS NULL), dueAt ASC, createdAt ASC
-        LIMIT 10
-      `;
-      const openLoopsBlock = buildOpenLoopsBlock(
-        openLoopsRaw.map((l) => ({ title: l.title, createdAt: new Date(l.createdAt), dueAt: l.dueAt ? new Date(l.dueAt) : null })),
-        tz
-      );
-
-      let briefStatus: string;
-      if (!user.dailyBriefEnabled) {
-        briefStatus = "désactivé";
-      } else {
-        const briefTime = user.dailyBriefTime ?? "heure non définie";
-        const lastSentRow = await prisma.$queryRaw<{ dailyBriefLastSent: string | null }[]>`
-          SELECT dailyBriefLastSent FROM User WHERE id = ${user.id} LIMIT 1
-        `;
-        const lastSent = lastSentRow[0]?.dailyBriefLastSent;
-        const todayStr = now.toLocaleDateString("en-CA", { timeZone: tz });
-        const lastSentDay = lastSent
-          ? new Date(lastSent).toLocaleDateString("en-CA", { timeZone: tz })
-          : null;
-        const sentToday = lastSentDay === todayStr;
-        const lastSentLabel = sentToday
-          ? `envoyé aujourd'hui à ${new Date(lastSent!).toLocaleTimeString("fr-FR", { timeZone: tz, hour: "2-digit", minute: "2-digit" })}`
-          : lastSent
-          ? `dernière envoi : ${new Date(lastSent).toLocaleDateString("fr-FR", { timeZone: tz })}`
-          : "jamais envoyé";
-        briefStatus = `activé — ${briefTime} chaque matin | contenu : agenda du jour + emails à traiter | ${lastSentLabel}`;
-      }
-
-      const inboxWatchStatus = user.inboxWatchEnabled
-        ? `enabled — checking every ${user.inboxWatchIntervalMins ?? 15} min`
-        : "disabled";
-
-      const accountsStatus = accounts.length === 0
-        ? "none"
-        : accounts.map((a) => `${a.label} (${a.connected ? "ok" : "disconnected"})`).join(", ");
-
-      const agentConfig = [
-        `now: ${datetimeStr}`,
-        `accounts: ${accountsStatus}`,
-        `daily brief: ${briefStatus}`,
-        `inbox watch: ${inboxWatchStatus}`,
-      ].join("\n");
-
-      // Just-in-time contact resolution
-      const emailsInText = (body.match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? []);
-      const resolvedContacts = await resolveContacts(user.id, body, emailsInText);
-      const contactsBlock = formatContactsBlock(resolvedContacts);
-      if (contactsBlock) console.log(`[agent] injecting ${resolvedContacts.length} contact(s): ${resolvedContacts.map(c => c.displayName).join(", ")}`);
-
-      // Build behavior block from user settings
-      const guardrailIds: string[] = (() => { try { return JSON.parse(user.guardrails || "[]"); } catch { return []; } })();
-      const guardrailLabels: Record<string, string> = {
-        review_before_send: "Always ask before sending emails",
-        no_calendar_solo: "Never modify calendar without user confirmation",
-        no_promo_reply: "Never reply to newsletters or marketing",
-        no_delete: "Never delete emails or events",
-      };
-      // Register: explicit dashboard choice always wins; "auto" is detected from
-      // the user's own recent messages (WhatsApp default: casual/tu).
-      const effectiveRegister = user.register === "auto"
-        ? detectRegister(history.filter((m) => m.direction === "inbound").slice(-5).map((m) => m.body))
-        : (user.register === "tu" ? "tu" : "vous");
-      const behaviorLines = [
-        `Tone: ${user.tone === "casual" ? "casual, friendly" : "formal, professional"}`,
-        `Register: ${effectiveRegister === "tu" ? "tutoiement (tu)" : "vouvoiement (vous)"}`,
-        `Language for replies: ${user.language === "en" ? "English" : "French"}`,
-        guardrailIds.length > 0
-          ? `Guardrails:\n${guardrailIds.map((g) => `- ${guardrailLabels[g] ?? g}`).join("\n")}`
-          : "",
-        user.signature ? `Default email signature:\n${user.signature}` : "",
-      ].filter(Boolean);
-      const behaviorContext = behaviorLines.join("\n");
-
-      // Twilio's typing indicator auto-expires after 25s — re-send every ~20s
-      // while the agent is still working on a reply.
-      typingInterval = setInterval(() => sendTypingIndicator(sid), 20000);
-
-      console.log(`[webhook] calling Claude — messages: ${messages.length}, accounts: ${accounts.length}`);
-      const parsed = await runAgentLoop({
-        apiKey: claudeApiKey,
-        ruleContext: user.ruleContext,
-        userContext: user.userContext ?? "",
-        writingStyle: user.writingStyle || undefined,
-        behaviorContext,
-        agentConfig,
-        actionsRecentes: actionsBlock,
-        focusCourant: focusCourant ?? undefined,
-        openLoopsBlock: openLoopsBlock || undefined,
-        contactsContext: contactsBlock,
-        accountsBlock,
-        messages,
-        accounts,
-        getToken,
-        userId: user.id,
-        tz,
-      });
-
-      console.log(`[webhook] Claude reply length: ${parsed.message.length}, usage: in=${parsed.usage?.inputTokens} out=${parsed.usage?.outputTokens}, iters=${parsed.iterations}`);
-      replyBody = sanitizeReply(parsed.message || "…");
-      if (replyBody.length > 900) console.warn(`[webhook] reply over budget: ${replyBody.length} chars`);
-      replyUsage = parsed.usage;
-      replyIterations = parsed.iterations;
-    } catch (err) {
-      console.error("[claude] error:", err instanceof Error ? err.message : err);
-      replyBody = "erreur technique, réessaie dans un instant.";
-    } finally {
-      if (typingInterval) clearInterval(typingInterval);
-    }
-  } else {
-    console.warn("[webhook] missing claudeApiKey — admin has not set the API key");
-    replyBody = "agent non configuré — l'administrateur doit paramétrer la clé Claude.";
+  let result: Awaited<ReturnType<typeof handleUserMessage>>;
+  try {
+    result = await handleUserMessage({
+      userId: user.id,
+      body,
+      inboundMessageId: inbound.id,
+      channel: "whatsapp",
+    });
+  } finally {
+    clearInterval(typingInterval);
   }
+  const replyBody = result.reply;
+  const replyUsage = result.usage;
+  const replyIterations = result.iterations;
 
   console.log(`[webhook] sending reply (${replyBody.length} chars) to ${fromNumber}`);
   try {
@@ -329,9 +151,9 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       from: toNumber,
       to: fromNumber,
       sid: replyMsg.sid,
-      inputTokens: replyUsage?.inputTokens ?? null,
-      outputTokens: replyUsage?.outputTokens ?? null,
-      model: replyUsage?.model ?? null,
+      inputTokens: replyUsage.inputTokens,
+      outputTokens: replyUsage.outputTokens,
+      model: replyUsage.model,
     };
     const outbound = await prisma.whatsAppMessage.create({
       data: {
@@ -349,6 +171,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       from: outbound.from,
       to: outbound.to,
       timestamp: outbound.timestamp,
+      channel: "whatsapp",
     });
   } catch (err) {
     console.error("[whatsapp] send error:", err instanceof Error ? err.message : String(err));
@@ -382,6 +205,7 @@ async function sendAndRecord(
   waEmitter.emit("message", {
     id: msg.id, direction: "outbound", body: msg.body,
     from: msg.from, to: msg.to, timestamp: msg.timestamp,
+    channel: "whatsapp",
   });
 }
 

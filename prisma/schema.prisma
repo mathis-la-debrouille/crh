@@ -206,6 +206,7 @@ model WhatsAppMessage {
   from            String
   to              String
   sid             String?
+  channel         String   @default("whatsapp") // "whatsapp" | "web"
   timestamp       DateTime @default(now())
   inputTokens     Int?
   outputTokens    Int?

@@ -79,9 +79,9 @@ export function AccountsPanel() {
             className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50"
           >
             <span className={`h-2 w-2 shrink-0 rounded-full ${a.connected ? "bg-green-400" : "bg-slate-300"}`} />
-            <span className="flex-1 min-w-0">
-              <span className="text-sm font-medium text-[#0f172a]">{a.label}</span>
-              <span className="ml-2 text-xs text-slate-400">{a.email}</span>
+            <span className="flex min-w-0 flex-1 items-baseline gap-2">
+              <span className="shrink-0 text-sm font-medium text-[#0f172a]">{a.label}</span>
+              <span className="truncate text-xs text-slate-400">{a.email}</span>
             </span>
             <span className="shrink-0 rounded-full bg-slate-100 px-2 py-px text-xs font-medium text-slate-500">
               {a.provider === "microsoft" ? "Microsoft" : "Google"}

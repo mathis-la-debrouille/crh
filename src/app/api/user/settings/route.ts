@@ -3,6 +3,12 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+// tone, language, signature, guardrails: DEPRECATED — kept read/writable for
+// backward compat (no breaking change) but the agent no longer reads them.
+// Tone/language are handled by register-mirroring + the prompt now; signatures
+// are per-account (EmailAccount.signature); the old guardrails described tools
+// that don't exist. Behavior configuration happens by talking to the agent —
+// see src/lib/agent-runner.ts.
 const ALLOWED = ["assistantPaused", "tone", "register", "language", "signature", "guardrails", "timezone"] as const;
 type SettingKey = typeof ALLOWED[number];
 
