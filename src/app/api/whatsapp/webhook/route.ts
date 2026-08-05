@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import twilio from "twilio";
-import { sendWhatsApp } from "@/lib/twilio";
+import { sendWhatsApp, sendTypingIndicator } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
 import { waEmitter } from "@/lib/whatsapp-events";
 import { runAgentLoop, buildAccountsBlock } from "@/lib/claude";
@@ -127,6 +127,8 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     timestamp: inbound.timestamp,
   });
 
+  sendTypingIndicator(sid); // fire-and-forget, best-effort — never blocks the reply
+
   // ── Onboarding state machine ──────────────────────────────────────────────
   let postOnboardingMessage: string | undefined;
   if (user.onboardingStep !== "done") {
@@ -143,6 +145,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   const webhookStartMs = Date.now();
 
   if (claudeApiKey) {
+    let typingInterval: ReturnType<typeof setInterval> | undefined;
     try {
       // Datetime / timezone — needed before history stamping
       const tz = user.timezone ?? "Europe/Paris";
@@ -276,6 +279,10 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
       ].filter(Boolean);
       const behaviorContext = behaviorLines.join("\n");
 
+      // Twilio's typing indicator auto-expires after 25s — re-send every ~20s
+      // while the agent is still working on a reply.
+      typingInterval = setInterval(() => sendTypingIndicator(sid), 20000);
+
       console.log(`[webhook] calling Claude — messages: ${messages.length}, accounts: ${accounts.length}`);
       const parsed = await runAgentLoop({
         apiKey: claudeApiKey,
@@ -304,6 +311,8 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
     } catch (err) {
       console.error("[claude] error:", err instanceof Error ? err.message : err);
       replyBody = "erreur technique, réessaie dans un instant.";
+    } finally {
+      if (typingInterval) clearInterval(typingInterval);
     }
   } else {
     console.warn("[webhook] missing claudeApiKey — admin has not set the API key");
