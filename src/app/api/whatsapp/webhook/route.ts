@@ -11,8 +11,10 @@ import { consumeVerificationCode } from "@/lib/otp";
 import { sanitizeReply } from "@/lib/utils";
 import { ADMIN_EMAIL } from "@/lib/auth";
 import { analyzeWritingStyle } from "@/lib/style-analysis";
-import { parseTime, pad2 } from "@/lib/onboarding";
+import { isRequestLike, nextMorning930 } from "@/lib/onboarding";
 import { buildStampedMessages } from "@/lib/conversation-history";
+import { detectRegister } from "@/lib/register";
+import { buildOpenLoopsBlock } from "@/lib/open-loops";
 
 function makeSilent() {
   return new NextResponse("<Response></Response>", { headers: { "Content-Type": "text/xml" } });
@@ -126,10 +128,13 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   });
 
   // ── Onboarding state machine ──────────────────────────────────────────────
+  let postOnboardingMessage: string | undefined;
   if (user.onboardingStep !== "done") {
     const onboardResult = await handleOnboarding(user, body, fromNumber, toNumber);
-    if (onboardResult !== null) return onboardResult;
-    // null = fall-through; onboardingStep already set to "done" inside
+    if (onboardResult.fireStyleAnalysis) analyzeWritingStyle(user.id); // fire-and-forget
+    postOnboardingMessage = onboardResult.postAgentMessage;
+    if (onboardResult.response !== null) return onboardResult.response;
+    // null = fall-through; onboardingStep already advanced inside
   }
 
   let replyBody: string;
@@ -192,6 +197,18 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         ? `${lastAction.kind}${lastAction.refId ? ` (${lastAction.refId})` : ""}${accountLabel ? ` [${accountLabel}]` : ""} : ${lastAction.summary}`
         : null;
 
+      // Open loops — durable working memory of ongoing subjects (who owes what, since when)
+      const openLoopsRaw = await prisma.$queryRaw<{ title: string; createdAt: string; dueAt: string | null }[]>`
+        SELECT title, createdAt, dueAt FROM OpenLoop
+        WHERE userId = ${user.id} AND status = 'open'
+        ORDER BY (dueAt IS NULL), dueAt ASC, createdAt ASC
+        LIMIT 10
+      `;
+      const openLoopsBlock = buildOpenLoopsBlock(
+        openLoopsRaw.map((l) => ({ title: l.title, createdAt: new Date(l.createdAt), dueAt: l.dueAt ? new Date(l.dueAt) : null })),
+        tz
+      );
+
       let briefStatus: string;
       if (!user.dailyBriefEnabled) {
         briefStatus = "désactivé";
@@ -243,9 +260,14 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         no_promo_reply: "Never reply to newsletters or marketing",
         no_delete: "Never delete emails or events",
       };
+      // Register: explicit dashboard choice always wins; "auto" is detected from
+      // the user's own recent messages (WhatsApp default: casual/tu).
+      const effectiveRegister = user.register === "auto"
+        ? detectRegister(history.filter((m) => m.direction === "inbound").slice(-5).map((m) => m.body))
+        : (user.register === "tu" ? "tu" : "vous");
       const behaviorLines = [
         `Tone: ${user.tone === "casual" ? "casual, friendly" : "formal, professional"}`,
-        `Register: ${user.register === "tu" ? "tutoiement (tu)" : "vouvoiement (vous)"}`,
+        `Register: ${effectiveRegister === "tu" ? "tutoiement (tu)" : "vouvoiement (vous)"}`,
         `Language for replies: ${user.language === "en" ? "English" : "French"}`,
         guardrailIds.length > 0
           ? `Guardrails:\n${guardrailIds.map((g) => `- ${guardrailLabels[g] ?? g}`).join("\n")}`
@@ -264,6 +286,7 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
         agentConfig,
         actionsRecentes: actionsBlock,
         focusCourant: focusCourant ?? undefined,
+        openLoopsBlock: openLoopsBlock || undefined,
         contactsContext: contactsBlock,
         accountsBlock,
         messages,
@@ -321,6 +344,12 @@ async function handleWebhook(_req: NextRequest, formData: URLSearchParams) {
   } catch (err) {
     console.error("[whatsapp] send error:", err instanceof Error ? err.message : String(err));
   }
+
+  // Onboarding follow-up (profile ask, etc.) — sent AFTER the real answer, never before
+  if (postOnboardingMessage) {
+    await sendAndRecord(user.id, fromNumber, toNumber, postOnboardingMessage);
+  }
+
   console.log(`[webhook] done`);
 
   return new NextResponse("<Response></Response>", {
@@ -347,80 +376,99 @@ async function sendAndRecord(
   });
 }
 
+const BRIEF_OFFER_MESSAGE =
+  "au fait — je peux t'envoyer un brief chaque matin (agenda + mails à traiter). dis-moi une heure ('8h30') si tu veux.";
+
+// Every transition to onboardingStep="done" goes through here. Schedules a
+// next-morning 09:30 nudge offering the daily brief — skipped if the user
+// already configured it some other way (e.g. on the site).
+async function scheduleBriefOfferReminder(user: { id: string; timezone: string | null; dailyBriefEnabled: boolean }) {
+  if (user.dailyBriefEnabled) return;
+  const tz = user.timezone ?? "Europe/Paris";
+  await prisma.reminder.create({
+    data: { userId: user.id, message: BRIEF_OFFER_MESSAGE, scheduledAt: nextMorning930(tz) },
+  });
+}
+
+async function saveProfileLine(userId: string, userContext: string | null, body: string) {
+  const line = `[PROFILE] ${body.replace(/\n/g, " ").slice(0, 500)}`;
+  const current = userContext ?? "";
+  const updated = current ? `${current}\n${line}` : line;
+  await prisma.user.update({ where: { id: userId }, data: { userContext: updated } });
+}
+
+interface OnboardingResult {
+  response: NextResponse | null; // null = fall through to the agent
+  postAgentMessage?: string;     // sent AFTER the agent's reply, never before
+  fireStyleAnalysis?: boolean;
+}
+
 async function handleOnboarding(
-  user: { id: string; onboardingStep: string; timezone: string | null; userContext: string | null },
+  user: { id: string; onboardingStep: string; timezone: string | null; userContext: string | null; dailyBriefEnabled: boolean },
   body: string,
   fromNumber: string,
   toNumber: string,
-): Promise<NextResponse | null> {
+): Promise<OnboardingResult> {
   const step = user.onboardingStep;
 
   if (step === "new") {
-    console.log(`[onboarding] step=new userId=${user.id}`);
+    console.log(`[onboarding] step=new userId=${user.id} requestLike=${isRequestLike(body)}`);
+
+    if (isRequestLike(body)) {
+      // Never swallow a real request — one-line intro, then let the agent
+      // actually answer. Profile is asked for as a follow-up after the answer.
+      await sendAndRecord(user.id, fromNumber, toNumber, "salut, moi c'est Vayt — je regarde ça.");
+      await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "profile" } });
+      return {
+        response: null,
+        postAgentMessage:
+          "au fait — dis-moi qui tu es en une phrase (métier, contexte), ça m'aide à trier pour toi. je lis aussi tes 25 derniers mails envoyés pour apprendre ton style d'écriture, une seule fois.",
+        fireStyleAnalysis: true,
+      };
+    }
+
+    // Greeting — original 3-message intro, unchanged
     await sendAndRecord(user.id, fromNumber, toNumber,
       "salut, moi c'est Vayt. je gère tes mails, ton agenda et tes rappels, directement ici.");
     await sendAndRecord(user.id, fromNumber, toNumber,
       "pour écrire comme toi, je vais lire tes 25 derniers mails envoyés et en tirer ton style — salutations, ton, longueur. ils sont analysés une fois pour créer ton profil, c'est tout.");
     await sendAndRecord(user.id, fromNumber, toNumber,
       "d'abord : dis-moi qui tu es en une ou deux phrases — ton métier, ton contexte, ce qui compte pour toi.");
-    analyzeWritingStyle(user.id); // fire-and-forget
     await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "profile" } });
-    return makeSilent();
+    return { response: makeSilent(), fireStyleAnalysis: true };
   }
 
   if (step === "profile") {
+    if (isRequestLike(body)) {
+      await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "profile_retry" } });
+      return { response: null, postAgentMessage: "et pour le profil — une phrase sur toi quand tu as 30 secondes :)" };
+    }
+
     const isSkip = /^(skip|passe|non|plus tard)\.?$/i.test(body.trim());
-    if (!isSkip) {
-      const line = `[PROFILE] ${body.replace(/\n/g, " ").slice(0, 500)}`;
-      const current = user.userContext ?? "";
-      const updated = current ? `${current}\n${line}` : line;
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { userContext: updated, onboardingStep: "brief" },
-      });
-    } else {
-      await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "brief" } });
-    }
-    await sendAndRecord(user.id, fromNumber, toNumber,
-      "noté. dernier réglage : tu veux un brief chaque matin (agenda + mails à traiter) ? dis-moi une heure — '8h30' — ou 'plus tard'.");
-    return makeSilent();
-  }
-
-  if (step === "brief") {
-    const parsed = parseTime(body);
-
-    if (parsed === "skip") {
-      await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "done" } });
-      await sendAndRecord(user.id, fromNumber, toNumber,
-        "ok, tu pourras l'activer quand tu veux ('brief à 8h'). essaie : demande-moi ce que tu as reçu d'important aujourd'hui.");
-      return makeSilent();
-    }
-
-    if (parsed !== null) {
-      const { hours: h, minutes: m } = parsed;
-      const briefTime = `${pad2(h)}:${pad2(m)}`;
-      const updateData: Record<string, unknown> = {
-        onboardingStep: "done",
-        dailyBriefEnabled: true,
-        dailyBriefTime: briefTime,
-      };
-      // Surprise-fire guard: if the time is already past today, mark as sent today
-      const tz = user.timezone ?? "Europe/Paris";
-      const now = new Date();
-      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now).split(":");
-      const nowMin = Number(parts[0]) * 60 + Number(parts[1]);
-      if (nowMin >= h * 60 + m) updateData.dailyBriefLastSent = now;
-
-      await prisma.user.update({ where: { id: user.id }, data: updateData });
-      await sendAndRecord(user.id, fromNumber, toNumber,
-        `parfait, brief à ${briefTime} chaque matin. c'est tout — essaie : demande-moi ce que tu as reçu d'important aujourd'hui.`);
-      return makeSilent();
-    }
-
-    // Neither time nor skip — fall through to agent with step set to "done"
+    if (!isSkip) await saveProfileLine(user.id, user.userContext, body);
     await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "done" } });
-    return null;
+    await scheduleBriefOfferReminder(user);
+    await sendAndRecord(user.id, fromNumber, toNumber,
+      isSkip
+        ? "essaie : demande-moi ce que tu as reçu d'important aujourd'hui."
+        : "noté. essaie : demande-moi ce que tu as reçu d'important aujourd'hui.");
+    return { response: makeSilent() };
   }
 
-  return null;
+  if (step === "profile_retry") {
+    await prisma.user.update({ where: { id: user.id }, data: { onboardingStep: "done" } });
+    await scheduleBriefOfferReminder(user);
+
+    if (isRequestLike(body)) {
+      // Give up silently — profile will be captured organically via <memoire>
+      return { response: null };
+    }
+
+    await saveProfileLine(user.id, user.userContext, body);
+    await sendAndRecord(user.id, fromNumber, toNumber,
+      "noté. essaie : demande-moi ce que tu as reçu d'important aujourd'hui.");
+    return { response: makeSilent() };
+  }
+
+  return { response: null };
 }

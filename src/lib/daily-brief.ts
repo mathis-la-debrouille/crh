@@ -1,16 +1,18 @@
 import { searchEmails, listCalendarEvents, getCalendarIds } from "@/lib/providers";
 import { getValidAccessToken } from "@/lib/google";
 import { getConnectedAccounts } from "@/lib/accounts";
-import { triageEmails } from "@/lib/email-triage";
+import { triageEmails, formatNoiseSenders, type TriagedEmail } from "@/lib/email-triage";
 import { sendWhatsApp } from "@/lib/twilio";
 import { prisma } from "@/lib/prisma";
 import { CLAUDE_API } from "@/lib/claude";
 import { ADMIN_EMAIL } from "@/lib/auth";
 import { extractSenderEmail } from "@/lib/email-classify";
+import { detectRegister } from "@/lib/register";
 import {
   type BriefMemoryEntry, type HighItem, parseBriefMemory,
   dedupBySender, applyRepeatDetection, updateBriefMemory,
 } from "@/lib/brief-dedup";
+import { renderLoopsLine } from "@/lib/open-loops";
 
 function todayRange(tz: string): { timeMin: string; timeMax: string } {
   const now = new Date();
@@ -83,12 +85,34 @@ export async function generateBriefText(
   let todayKeys: string[] = [];
 
   const tz = user?.timezone ?? "Europe/Paris";
-  const register = user?.register ?? "vous";
+  let register = user?.register ?? "auto";
+  if (register === "auto") {
+    const recentInbound = await prisma.whatsAppMessage.findMany({
+      where: { userId, direction: "inbound" },
+      orderBy: { timestamp: "desc" },
+      take: 5,
+      select: { body: true },
+    });
+    register = detectRegister(recentInbound.map((m) => m.body));
+  }
   const apiKey = adminRow?.claudeApiKey ?? null;
   const now = new Date();
   const dateStr = now.toLocaleDateString("fr-FR", { timeZone: tz, weekday: "long", day: "numeric", month: "long" });
   const possessive = register === "tu" ? "ton" : "votre";
   const lines: string[] = [`bonjour. ${dateStr}. voici ${possessive} brief.`];
+
+  // ── Open loops — opens the brief, before emails ───────────────────────────
+  const openLoops = await prisma.openLoop.findMany({
+    where: { userId, status: "open" },
+    orderBy: { createdAt: "asc" },
+    take: 10,
+    select: { title: true, createdAt: true, dueAt: true, sourceRef: true },
+  });
+  const loopSourceRefs = new Set(openLoops.map((l) => l.sourceRef).filter((r): r is string => !!r));
+  if (openLoops.length > 0) {
+    const loopsLine = renderLoopsLine(openLoops, tz, register === "tu");
+    if (loopsLine) lines.push(loopsLine);
+  }
 
   const accounts = await getConnectedAccounts(userId);
   const multiAccount = accounts.length > 1;
@@ -96,7 +120,7 @@ export async function generateBriefText(
   // ── Emails — triage and show only high, count the rest ───────────────────
   const highEmails: HighItem[] = [];
   let normalCount = 0;
-  let bruitCount = 0;
+  const noiseEmails: TriagedEmail[] = [];
 
   if (accounts.length > 0) {
     try {
@@ -120,19 +144,23 @@ export async function generateBriefText(
               subject: e.subject,
               snippet: e.snippet ?? "",
               prefix: multiAccount ? `[${label}] ` : "",
+              emailId: e.id,
             });
           } else if (e.priority === "normal") {
             normalCount++;
           } else {
-            bruitCount++;
+            noiseEmails.push(e);
           }
         }
       }
 
       // Dedup by sender, then flag repeats seen in the last 5 days (kept in memory)
       const merged = dedupBySender(highEmails);
-      const { ordered, todayKeys: keys } = applyRepeatDetection(merged, briefMemory);
+      const { ordered: orderedRaw, todayKeys: keys } = applyRepeatDetection(merged, briefMemory);
       todayKeys = keys;
+      // An email that already spawned an open loop shows only as the loop line above —
+      // never both (loops replace the "toujours en attente" mechanism for these).
+      const ordered = orderedRaw.filter((e) => !e.emailId || !loopSourceRefs.has(e.emailId));
 
       if (ordered.length > 0) {
         const top = ordered.slice(0, 3);
@@ -215,14 +243,31 @@ export async function generateBriefText(
     }
   }
 
-  // ── Noise count line ──────────────────────────────────────────────────────
-  const totalOther = normalCount + bruitCount;
-  if (totalOther > 0 && accounts.length > 0) {
-    const normalPart = normalCount > 0 ? `${normalCount} à regarder` : "";
-    const bruitPart = bruitCount > 0 ? `${bruitCount} newsletters/notifs` : "";
-    const parts = [normalPart, bruitPart].filter(Boolean);
-    lines.push(`+ ${totalOther} autres mails (${parts.join(", ")}), rien d'urgent.`);
+  // ── Normal + noise count lines ────────────────────────────────────────────
+  if (normalCount > 0 && accounts.length > 0) {
+    lines.push(`+ ${normalCount} mail${normalCount > 1 ? "s" : ""} à regarder.`);
   }
+  if (noiseEmails.length > 0 && accounts.length > 0) {
+    lines.push(`+ ${noiseEmails.length} newsletters/notifs (${formatNoiseSenders(noiseEmails)}), rien d'urgent.`);
+  }
+
+  // ── Loop hygiene: nudge once for loops open >14 days with no update ───────
+  try {
+    const staleCutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    const stale = await prisma.openLoop.findMany({
+      where: { userId, status: "open", updatedAt: { lt: staleCutoff }, nudgedAt: null },
+      select: { id: true, title: true },
+    });
+    if (stale.length > 0) {
+      for (const l of stale) {
+        lines.push(`toujours d'actualité : ${l.title} ? (dis-moi "laisse tomber" sinon)`);
+      }
+      await prisma.openLoop.updateMany({
+        where: { id: { in: stale.map((l) => l.id) } },
+        data: { nudgedAt: new Date() },
+      });
+    }
+  } catch { console.error("[daily-brief] loop hygiene check failed"); }
 
   const nextBriefMemory = updateBriefMemory(briefMemory, todayKeys);
   return { text: lines.join("\n"), nextBriefMemory };

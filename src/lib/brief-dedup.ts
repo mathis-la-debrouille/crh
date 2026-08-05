@@ -9,6 +9,7 @@ export interface HighItem {
   subject: string;
   snippet: string;
   prefix: string;
+  emailId?: string; // used to cross-reference against OpenLoop.sourceRef, avoids double display
 }
 
 export interface DedupedItem extends HighItem {
@@ -67,6 +68,7 @@ export function dedupBySender(items: HighItem[]): HighItem[] {
       subject: subjects.join(", "),
       snippet: snippets.join(" ; "),
       prefix: group[0].prefix,
+      emailId: group[0].emailId,
     };
   });
 }

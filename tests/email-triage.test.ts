@@ -1,6 +1,6 @@
 // Plain assertion script — run with: npx tsx tests/email-triage.test.ts
 import assert from "node:assert/strict";
-import { classifyOne } from "../src/lib/email-classify";
+import { classifyOne, formatNoiseSenders, type SenderRuleAction, type TriagedEmail } from "../src/lib/email-classify";
 import type { EmailSummary } from "../src/lib/gmail-tools";
 
 function make(overrides: { from: string; subject: string } & Partial<EmailSummary>): EmailSummary {
@@ -87,6 +87,89 @@ for (const [label, email, known, expectedCat, expectedPri] of cases) {
     failed++;
   }
 }
+
+function check(label: string, fn: () => void) {
+  try { fn(); console.log(`  ✓ ${label}`); passed++; }
+  catch (err) {
+    console.error(`  ✗ ${label}`);
+    console.error(`    ${err instanceof Error ? err.message : err}`);
+    failed++;
+  }
+}
+
+// ── Sender rules ─────────────────────────────────────────────────────────────
+check("rule 'upstream.so' mute → priority low even though transactional lexicon matches", () => {
+  const email = make({ from: "Upstream <noreply@upstream.so>", subject: "Confirmation de commande", listUnsubscribe: true });
+  const rules = new Map<string, SenderRuleAction>([["upstream.so", "mute"]]);
+  const r = classifyOne(email, NONE, rules);
+  assert.equal(r.priority, "low");
+});
+
+check("rule 'scarfo.com' always_show → newsletter comes back priority high, category unchanged", () => {
+  const email = make({ from: "Scarfo <news@scarfo.com>", subject: "La lettre de Scarfo", listUnsubscribe: true });
+  const rules = new Map<string, SenderRuleAction>([["scarfo.com", "always_show"]]);
+  const r = classifyOne(email, NONE, rules);
+  assert.equal(r.category, "newsletter");
+  assert.equal(r.priority, "high");
+});
+
+check("full-email rule key does NOT apply to other senders on the same domain", () => {
+  const email = make({ from: "Marie <marie@x.fr>", subject: "Re: notre réunion" });
+  const rules = new Map<string, SenderRuleAction>([["jean@x.fr", "mute"]]);
+  const r = classifyOne(email, NONE, rules);
+  assert.equal(r.priority, "normal"); // unaffected — rule was keyed to a different address
+});
+
+check("domain rule key DOES apply to any sender on that domain", () => {
+  const email = make({ from: "Marie <marie@x.fr>", subject: "Re: notre réunion" });
+  const rules = new Map<string, SenderRuleAction>([["x.fr", "mute"]]);
+  const r = classifyOne(email, NONE, rules);
+  assert.equal(r.priority, "low");
+});
+
+check("full-email rule key DOES apply to that exact address", () => {
+  const email = make({ from: "Jean <jean@x.fr>", subject: "Re: notre réunion" });
+  const rules = new Map<string, SenderRuleAction>([["jean@x.fr", "always_show"]]);
+  const r = classifyOne(email, NONE, rules);
+  assert.equal(r.priority, "high");
+});
+
+check("no matching rule → normal classification unaffected", () => {
+  const email = make({ from: "Twitch <noreply@twitch.tv>", subject: "Inoxtag est en live" });
+  const rules = new Map<string, SenderRuleAction>([["scarfo.com", "always_show"]]);
+  const r = classifyOne(email, NONE, rules);
+  assert.equal(r.category, "notification");
+  assert.equal(r.priority, "low");
+});
+
+// ── formatNoiseSenders ───────────────────────────────────────────────────────
+function noiseEmail(from: string): TriagedEmail {
+  return { ...make({ from, subject: "x" }), category: "newsletter", priority: "low" };
+}
+
+check("formatNoiseSenders: matches the spec example", () => {
+  const noise = [
+    ...Array(6).fill(0).map(() => noiseEmail("Upstream <no-reply@upstream.so>")),
+    noiseEmail("Medium <noreply@medium.com>"),
+    noiseEmail("Twitch <noreply@twitch.tv>"),
+  ];
+  assert.equal(formatNoiseSenders(noise), "Upstream ×6, Medium, Twitch");
+});
+
+check("formatNoiseSenders: caps at 4 distinct senders with a trailing ellipsis", () => {
+  const noise = ["A", "B", "C", "D", "E"].map((n) => noiseEmail(`${n} <n@${n.toLowerCase()}.com>`));
+  const result = formatNoiseSenders(noise);
+  assert.equal(result, "A, B, C, D…");
+});
+
+check("formatNoiseSenders: falls back to domain when no display name", () => {
+  const noise = [noiseEmail("noreply@upstream.so")];
+  assert.equal(formatNoiseSenders(noise), "upstream.so");
+});
+
+check("formatNoiseSenders: empty input → empty string", () => {
+  assert.equal(formatNoiseSenders([]), "");
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

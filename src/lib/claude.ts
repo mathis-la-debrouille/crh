@@ -1,9 +1,10 @@
 import { searchEmails, readEmail, draftEmail, createCalendarEvent, listCalendarEvents, getCalendarIds } from "@/lib/providers";
-import { triageEmails } from "@/lib/email-triage";
+import { triageEmails, formatNoiseSenders } from "@/lib/email-triage";
 import { prisma } from "@/lib/prisma";
 import { generateAndSendDailyBrief } from "@/lib/daily-brief";
 import { upsertContact } from "@/lib/contacts";
 import { type AccountInfo, resolveAccount, AccountAmbiguousError, AccountNotFoundError } from "@/lib/accounts";
+import { findMatchingLoop } from "@/lib/open-loops";
 
 export const CLAUDE_API = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL = "claude-sonnet-4-6";
@@ -17,66 +18,93 @@ export interface AgentResponse {
 
 // ─── Base prompt (code-owned — not user-editable) ────────────────────────────
 
-const BASE_PROMPT = `<identity>
-You are the user's personal assistant on WhatsApp. Your mission: save them time.
-You manage their emails, calendar, and reminders. You are a competent assistant who gets to the point — not a chatbot that introduces its features.
-</identity>
+const BASE_PROMPT = `<identite>
+Tu es Vayt, l'assistant personnel de l'utilisateur sur WhatsApp. Ta mission : lui faire gagner du temps.
+Tu gères ses mails, son agenda et ses rappels. Tu es un assistant qui AGIT et va droit au but — pas un chatbot qui se présente ou qui demande la permission de faire son travail.
+</identite>
 
-<whatsapp_format>
-- Short replies by default: 1 to 6 lines. Never more than 8. A reply that forces the user to tap "see more" is a failure.
-- No titles, no sections, no separators (---), no bullet points for fewer than 3 items.
-- WhatsApp bold *text*: 2 maximum per message.
-- Write like a human in conversation: sentences, not layout.
-- Registre : par défaut, tutoie. Passe au vouvoiement uniquement si l'utilisateur te vouvoie. (Il t'écrit sur WhatsApp — c'est une conversation, pas un courrier.)
-- Contextual emoji allowed sparingly (✅ 📅 ✉️ ⚠️ and similar). Never face emoji (😂 😊 🥳…) or celebratory/unprofessional ones (🎉 🎊 🔥 💯). Text smileys :) ;) are fine.
-</whatsapp_format>
+<format_whatsapp>
+- Court par défaut : 1 à 6 lignes, jamais plus de 8. Une réponse qui force à cliquer « voir plus » est un échec.
+- Pas de titres, pas de sections, pas de séparateurs, pas de puces sous 3 éléments. Gras *WhatsApp* : 2 max par message.
+- Écris comme un humain en conversation : des phrases, pas de la mise en page.
+- Registre et langue : suis la ligne « Register » et « Language » du bloc behavior — c'est la seule source de vérité. Ne change jamais de registre en cours de conversation.
+- Emoji contextuels sobres autorisés (✅ 📅 ✉️ ⚠️). Jamais d'emoji visage (😂 😊 🥳…) ni festif (🎉 🔥 💯). :) ;) autorisés.
+</format_whatsapp>
 
-<response_contract>
-- Always lead with the most important information. No preamble ("Here are today's new emails:" = forbidden).
-- One important email or event = one line: who — what — action needed.
-- Noise (newsletters, notifications, promos) is never detailed: a count at the end ("+ 4 newsletters, nothing important"), or nothing at all.
-- End with a single action offer, only if useful ("want me to draft a reply?"). Never a menu of options.
-- Never mention your internal mechanics: memory, tools, technical capabilities. Show, don't explain. Only exception: if configuration is needed (Google not connected, missing key), say it in one plain sentence.
-- If the user is explicitly looking for a specific email (a newsletter, a receipt, a promo), category no longer matters: find it and answer.
-- Understand the final intent: "any new emails?" means "is there anything worth my attention?", not "list everything".
-- If asked what you can do: 2-3 natural sentences + one concrete example to try. Never a catalogue.
-- If the user corrects your style ("too long", "be more direct", "no lists"), save it via remember (kind=preference) and apply it immediately. Confirm with one word: "noted."
-- Si l'utilisateur insiste après ta mise en garde (« fais-le », « fais ce que je t'ai dit »), exécute immédiatement du mieux possible, sans re-négocier ni commenter.
-- Ne décris JAMAIS tes limites techniques (« mes outils », « la recherche ne me permet pas ») : livre ce que tu as, complète si besoin par d'autres recherches, et c'est tout.
-- Ne suggère JAMAIS d'aller voir dans Gmail, Google Calendar ou ailleurs : tu ES l'accès du user à ses mails et son agenda.
-</response_contract>
+<action>
+- LECTURE (chercher, lire, lister — mails, agenda, contacts) : tu ne demandes JAMAIS la permission. Tu exécutes, puis tu réponds avec le résultat. « Tu veux que je cherche ? » = interdit — cherche, et réponds en un seul tour.
+- ÉCRITURE réversible (brouillon, rappel) : fais-le et montre le résultat. Un brouillon ne part jamais tout seul — inutile de sur-confirmer avant de le créer.
+- ÉCRITURE visible par des tiers (événement avec invités, envoi) : confirme une fois, seulement le paramètre ambigu (« mardi 15h ou 16h ? »), jamais tout le reste.
+- Va au bout avant de répondre : si la première recherche ne suffit pas, reformule et relance (autre requête, agenda passé avec time_min antérieur, autre compte). Trois tours pour une question qui en méritait un = un échec.
+- Si l'utilisateur insiste après ta mise en garde (« fais-le », « fais ce que je t'ai dit ») : exécute immédiatement, sans re-négocier ni commenter.
+- Respecte les Guardrails du bloc behavior : ce sont des interdits absolus.
+</action>
 
-<email_judgment>
-Email results arrive pre-sorted, with category and priority already computed upstream.
-- priority "high": handle first, one detailed line each.
-- category "newsletter" / "notification" / "promo": noise — count them, never detail them, even if the subject looks interesting.
-- If an email looks important, read it (read_email) before talking about it. Never speculate ("it seems there's a message from…" = forbidden): read it, then say what it contains and what it means.
-- Une invitation d'agenda (category "invitation") est déjà ajoutée automatiquement à l'agenda par Google. Ne propose JAMAIS de la "créer" ou de l'"ajouter" — vérifie l'agenda avec list_calendar_events et confirme le créneau ('c'est dans ton agenda mardi 17h30-18h15'). N'utilise jamais create_calendar_event pour un événement reçu par invitation.
-</email_judgment>
+<contrat_de_reponse>
+- Commence par l'info la plus importante. Aucun préambule (« Voici les nouveaux mails : » = interdit).
+- Un mail/événement important = une ligne : qui — quoi — action attendue.
+- Le bruit (newsletters, notifs, promos) n'est jamais détaillé : un compte en fin de message (« + 4 newsletters, rien d'important »), ou rien.
+- Comprends l'intention finale : « quoi de neuf ? » = « quelque chose mérite-t-il mon attention ? », pas « liste tout ». « prénom et nom de X » = trouve-les, ne raconte pas où tu as regardé.
+- Termine par UNE proposition d'ACTE utile maximum — quelque chose que TU fais (« je te prépare la réponse ? », « je te mets un rappel demain 9h ? »), pas une question ouverte (« voulez-vous que je lise… ? »). Si aucun acte n'est utile, termine net.
+- Si l'utilisateur cherche explicitement un mail précis (newsletter, reçu, promo inclus), la catégorie n'a plus d'importance : trouve-le et réponds.
+- Ne décris jamais ta mécanique interne (outils, mémoire, limites techniques) — et n'invente JAMAIS une explication pour masquer un échec de recherche : si tu ne trouves pas après avoir vraiment cherché, dis « je n'ai pas trouvé » + la piste suivante. Ne renvoie JAMAIS vers Gmail, Calendar ou un autre outil : tu ES son accès.
+- Si on te demande ce que tu sais faire : 2-3 phrases naturelles + un exemple concret à essayer. Jamais de catalogue.
+</contrat_de_reponse>
+
+<memoire>
+- Toute information durable apprise en conversation — identité, métier, usage d'un compte (perso/pro), préférences, personnes, projets — DOIT être enregistrée via remember AVANT de répondre. Dire « noté » sans avoir appelé remember est interdit.
+- Correction de style (« trop long », « plus direct », « pas de listes ») : remember(kind=preference), application immédiate, confirmation en un mot : « noté. »
+- Un compte décrit comme perso/secondaire ⇒ seuil d'importance plus haut : n'alerte que sur le vraiment critique.
+</memoire>
+
+<jugement_mails>
+Les résultats arrivent pré-triés, avec category et priority calculés en amont.
+- priority "high" : à traiter en premier, une ligne détaillée chacun.
+- category "newsletter" / "notification" / "promo" : du bruit — compte-les en nommant les expéditeurs (« + 8 newsletters (Upstream ×6, Medium…) »), ne les détaille pas spontanément. MAIS si l'utilisateur demande le détail (« c'est quoi les newsletters ? », « lis-moi les titres »), donne les titres, un par ligne, sans te faire prier.
+- Si l'utilisateur exprime une préférence durable sur un expéditeur (« toujours me montrer les mails de X », « ignore Y ») : appelle set_sender_rule, puis confirme en un mot (« noté — je te montrerai toujours les mails de Scarfo. »).
+- Si un mail a l'air important, lis-le (read_email) avant d'en parler. Ne spécule jamais (« il semble y avoir un message de… » = interdit) : lis, puis dis ce qu'il contient et ce que ça implique.
+- Une invitation d'agenda (category "invitation") est déjà ajoutée automatiquement à l'agenda. Ne propose JAMAIS de la « créer » ou de l'« ajouter » — vérifie l'agenda avec list_calendar_events et confirme le créneau (« c'est dans ton agenda mardi 17h30-18h15 »). N'utilise jamais create_calendar_event pour un événement reçu par invitation.
+</jugement_mails>
+
+<suivi_de_fond>
+Le bloc <boucles_ouvertes> liste les sujets de fond en cours (qui attend quoi, depuis quand, pour quand). C'est ta mémoire de travail — fiable, contrairement à l'historique de conversation.
+- Quand un mail important contient une demande adressée à l'utilisateur (« envoie-moi ton CV », « ton retour sur X ? ») ou que l'utilisateur s'engage en conversation (« je lui réponds demain ») : appelle track_loop.
+- Quand l'utilisateur dit que c'est fait/envoyé/réglé, ou te demande de laisser tomber : appelle close_loop.
+- « quoi de neuf ? » = les nouveautés D'ABORD, puis les boucles encore ouvertes en une ligne (« toujours en attente : CV pour Hubert (3 j) »). Ne re-présente jamais une boucle inchangée comme une nouveauté.
+- Une boucle avec échéance proche passe devant tout le reste.
+</suivi_de_fond>
 
 <regles_temporelles>
 - L'historique de conversation est horodaté [jour JJ/MM HH:mm]. Tout ce qui date de plus de quelques heures décrit le PASSÉ, pas l'état actuel.
-- Ne JAMAIS affirmer qu'un rendez-vous a lieu ("ce soir", "demain", "à 17h30") depuis la mémoire de conversation ou un email : vérifie d'abord avec list_calendar_events. L'agenda est la seule source de vérité sur les événements.
-- Une date relative dans un email ("ce soir", "demain", "lundi prochain") se réfère à la DATE D'ENVOI de cet email, pas à aujourd'hui. Convertis toujours en date absolue avant d'en parler ("l'entretien était mardi 21").
-- Entre minuit et 6h du matin, "ce soir" est ambigu : utilise des dates absolues.
+- Ne JAMAIS affirmer qu'un rendez-vous a lieu (« ce soir », « demain », « à 17h30 ») depuis la mémoire de conversation ou un email : vérifie d'abord avec list_calendar_events. L'agenda est la seule source de vérité sur les événements.
+- Une date relative dans un email (« ce soir », « demain », « lundi prochain ») se réfère à la DATE D'ENVOI de cet email, pas à aujourd'hui. Convertis toujours en date absolue avant d'en parler (« l'entretien était mardi 21 »).
+- Entre minuit et 6h du matin, « ce soir » est ambigu : utilise des dates absolues.
+- Les événements PASSÉS restent accessibles : passe time_min dans le passé pour les retrouver (participants inclus).
 - Si une info d'un vieux message contredit l'agenda ou la boîte mail actuelle, l'agenda/la boîte gagne.
 </regles_temporelles>
 
-<examples>
-User: "any new emails?"
-Bad reply: "Here are today's unread emails: ✉️ *Airbnb* (x2) — Exchanges about your reservation… 📣 *Twitch* — Inoxtag is live… 📰 *Medium* — Article…"
-Good reply: "Jerome (Airbnb co-host) replied about your Ecusson booking July 10-14: you can access the place from 2am. Nothing else important — 3 newsletters. Want me to confirm it works for you?"
+<exemples>
+User : « quoi de neuf ? »
+Mauvaise réponse : « Voici les nouveaux mails non lus du jour : ✉️ *Airbnb* (x2) — … 📣 *Twitch* — … »
+Bonne réponse : « Jérôme (co-hôte Airbnb) a répondu pour ta résa Écusson du 10-14 juillet : accès possible dès 2h du matin. Rien d'autre d'important — 3 newsletters. Je lui confirme que ça te va ? »
 
-User: "what can you do?"
-Bad reply: a catalogue with sections (Emails / Calendar / Reminders / Memory) and bullet points.
-Good reply: "I handle your emails (sort, read, draft replies), your calendar, and reminders. Best to try it: ask me what you've received today that matters, or say 'daily brief every morning at 8' and I'll take care of it."
+User : « que peux-tu faire ? »
+Mauvaise réponse : un catalogue en sections avec puces.
+Bonne réponse : « Je gère tes mails (je trie, je lis, je prépare des réponses), ton agenda et tes rappels. Le mieux c'est d'essayer : demande-moi ce que tu as reçu d'important aujourd'hui. »
 
-User: "what's my day looking like?"
-Good reply: "2 meetings: client call at 10, dentist at 3:30. One email to handle — Marie is waiting on your quote reply before tonight. Everything else can wait."
+User : « ma journée ? »
+Bonne réponse : « 2 rdv : call client à 10h, dentiste à 15h30. Un mail à traiter — Marie attend ta réponse sur le devis avant ce soir. Le reste peut attendre. »
+
+User : « prénom et nom de ahmed »
+Mauvaise réponse : « Je n'ai que "Ahmed" — tu veux que je cherche dans tes mails ? »
+Bonne réponse (après recherche agenda passé + mails, en un tour) : « Ahmed Benali — GPM Décathlon, côté identity client. C'était ta visio du 27 juillet, organisée par Hubert. »
+
+User : « Moi c'est Elliot. Tu es sur mon Google perso, pas pro. »
+Bonne réponse (remember appelé d'abord) : « noté — compte perso, je ne te dérange que pour l'important. »
 
 User : « fais ce que je t'ai dit »
-Bonne réponse : commence par « ok — » et tutoie. Jamais de « vous » avec un utilisateur qui te tutoie.
-</examples>`;
+Bonne réponse : « ok — » puis exécution complète, sans commentaire sur la difficulté.
+</exemples>`;
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
@@ -85,21 +113,21 @@ function buildAgentTools(accounts: AccountInfo[]) {
   const accountEnum = accounts.map((a) => a.label);
   const accountParamRequired = multiAccount
     ? {
-        account: {
-          type: "string",
-          enum: accountEnum,
-          description: "Which account to use. REQUIRED — specify the label.",
-        },
-      }
+      account: {
+        type: "string",
+        enum: accountEnum,
+        description: "Which account to use. REQUIRED — specify the label.",
+      },
+    }
     : {};
   const accountParamOptional = multiAccount
     ? {
-        account: {
-          type: "string",
-          enum: accountEnum,
-          description: "Account to use. Omit to search ALL accounts.",
-        },
-      }
+      account: {
+        type: "string",
+        enum: accountEnum,
+        description: "Account to use. Omit to search ALL accounts.",
+      },
+    }
     : {};
 
   return [
@@ -161,7 +189,9 @@ function buildAgentTools(accounts: AccountInfo[]) {
     {
       name: "list_calendar_events",
       description:
-        "List upcoming events from Google Calendar. timeMin/timeMax are ISO 8601 local time. Defaults to start of today if timeMin is omitted.",
+        "List events from the calendar. timeMin/timeMax are ISO 8601 local time; defaults to start of today. " +
+        "PAST events are fully accessible — pass an earlier time_min (e.g. time_min=2026-07-01) to find them. " +
+        "Events include attendee emails — useful to identify who a meeting was with. Use query for free-text matching on titles.",
       input_schema: {
         type: "object",
         properties: {
@@ -224,13 +254,16 @@ function buildAgentTools(accounts: AccountInfo[]) {
     {
       name: "remember",
       description:
-        "Persist a durable fact about the user, a contact, a project, or a preference.",
+        "Persist a durable fact about the user, a contact, a project, or a preference. " +
+        "Use for ANY durable fact learned in conversation — identity, job, what an account " +
+        "is used for (perso/pro), people, preferences. Call BEFORE replying; saying 'noté' " +
+        "without calling remember is forbidden.",
       input_schema: {
         type: "object",
         properties: {
           kind: {
             type: "string",
-            enum: ["person", "project", "preference", "priority", "avoid", "active_task"],
+            enum: ["person", "project", "preference", "priority", "avoid", "active_task", "profile", "account_usage"],
           },
           key: { type: "string" },
           value: { type: "string" },
@@ -245,6 +278,52 @@ function buildAgentTools(accounts: AccountInfo[]) {
         type: "object",
         properties: { key: { type: "string" } },
         required: ["key"],
+      },
+    },
+    {
+      name: "track_loop",
+      description:
+        "Track an ongoing subject: something the user owes someone (send CV, reply on X) or is waiting for. " +
+        "Call when an important email contains a request directed at the user, or when the user commits to " +
+        "something in conversation. If a similar loop already exists it is updated, not duplicated.",
+      input_schema: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          counterpart: { type: "string" },
+          due_at: { type: "string", description: "ISO 8601 local time" },
+          direction: { type: "string", enum: ["owed_by_user", "owed_to_user"], description: "Default owed_by_user" },
+          source_email_id: { type: "string" },
+        },
+        required: ["title"],
+      },
+    },
+    {
+      name: "close_loop",
+      description:
+        "Mark an ongoing subject as done or dropped. Call when the user says it's sent/done/handled, or asks to drop it.",
+      input_schema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Fuzzy-matched against open loops" },
+          status: { type: "string", enum: ["done", "dropped"], description: "Default done" },
+        },
+        required: ["title"],
+      },
+    },
+    {
+      name: "set_sender_rule",
+      description:
+        "Save a durable rule for a sender or domain. Use when the user says things like 'toujours me montrer " +
+        "les mails de X', 'lis-moi les titres de ce qui vient de scarfo.com', 'ignore les mails de Y'. " +
+        "Applies from now on to triage, briefs and notifications.",
+      input_schema: {
+        type: "object",
+        properties: {
+          sender: { type: "string", description: "Email address or domain" },
+          action: { type: "string", enum: ["always_show", "mute"] },
+        },
+        required: ["sender", "action"],
       },
     },
     {
@@ -317,7 +396,7 @@ async function rememberFact(userId: string, kind: string, key: string, value: st
   if (idx >= 0) lines[idx] = newLine; else lines.push(newLine);
   const MAX_MEMORY_LINES = 60;
   while (lines.filter(Boolean).length > MAX_MEMORY_LINES) {
-    const evictIdx = lines.findIndex((l) => l && !l.startsWith("[PRIORITY]") && !l.startsWith("[AVOID]") && !l.startsWith("[PREFERENCE]"));
+    const evictIdx = lines.findIndex((l) => l && !l.startsWith("[PRIORITY]") && !l.startsWith("[AVOID]") && !l.startsWith("[PREFERENCE]") && !l.startsWith("[PROFILE]") && !l.startsWith("[ACCOUNT_USAGE]"));
     if (evictIdx === -1) break;
     lines.splice(evictIdx, 1);
   }
@@ -349,6 +428,7 @@ export async function runAgentLoop({
   agentConfig,
   actionsRecentes,
   focusCourant,
+  openLoopsBlock,
   contactsContext,
   accountsBlock,
   messages,
@@ -365,6 +445,7 @@ export async function runAgentLoop({
   agentConfig?: string;
   actionsRecentes?: string;
   focusCourant?: string;
+  openLoopsBlock?: string;
   contactsContext?: string;
   accountsBlock?: string;
   messages: { role: "user" | "assistant"; content: string }[];
@@ -385,6 +466,7 @@ export async function runAgentLoop({
   if (agentConfig) systemParts.push(`<agent_config>\n${agentConfig}\n</agent_config>`);
   if (actionsRecentes) systemParts.push(`<actions_recentes>\n${actionsRecentes}\n</actions_recentes>`);
   if (focusCourant) systemParts.push(`<focus_courant>\n${focusCourant}\n</focus_courant>`);
+  if (openLoopsBlock) systemParts.push(openLoopsBlock);
   if (contactsContext) systemParts.push(`<contacts_pertinents>\n${contactsContext}\n</contacts_pertinents>`);
   if (accountsBlock) systemParts.push(accountsBlock);
   if (accounts.length > 1) {
@@ -511,7 +593,7 @@ export async function runAgentLoop({
                 return e;
               };
               result = {
-                summary: { important: nHigh, autres: signal.length - nHigh, bruit: noise.length },
+                summary: { important: nHigh, autres: signal.length - nHigh, bruit: noise.length, bruit_senders: formatNoiseSenders(noise) },
                 emails: signal
                   .map(({ id, from, subject, date, snippet, category, priority }) => ({ id, from, subject, date, snippet, category, priority }))
                   .map(dedupOrKeep),
@@ -667,7 +749,7 @@ export async function runAgentLoop({
                     where: { id: acct.id },
                     data: { inboxWatchEnabled: call.input.enabled as boolean },
                   });
-                } catch {}
+                } catch { }
               } else if (call.input.enabled !== undefined) {
                 // Apply to all accounts
                 await prisma.emailAccount.updateMany({
@@ -732,6 +814,77 @@ export async function runAgentLoop({
                 result = { error: "contact not found" };
               }
 
+            } else if (call.name === "track_loop") {
+              const title = call.input.title as string;
+              const counterpart = call.input.counterpart as string | undefined;
+              const dueAtRaw = call.input.due_at as string | undefined;
+              const dueAt = dueAtRaw ? new Date(dueAtRaw) : null;
+              const direction = (call.input.direction as string) ?? "owed_by_user";
+              const sourceEmailId = call.input.source_email_id as string | undefined;
+
+              const openLoops = await prisma.openLoop.findMany({
+                where: { userId, status: "open" },
+                select: { id: true, title: true, counterpart: true },
+              });
+              const match = findMatchingLoop(title, counterpart ?? null, openLoops);
+
+              if (match) {
+                await prisma.openLoop.update({
+                  where: { id: match.id },
+                  data: {
+                    ...(dueAt ? { dueAt } : {}),
+                    ...(counterpart ? { counterpart } : {}),
+                  },
+                });
+                await logAction(userId, "loop", match.id, `suivi : ${title}`);
+                result = { success: true, id: match.id, updated: true };
+              } else {
+                const openCount = await prisma.openLoop.count({ where: { userId, status: "open" } });
+                if (openCount >= 15) {
+                  result = { error: "trop de sujets ouverts, propose à l'utilisateur d'en fermer" };
+                } else {
+                  const created = await prisma.openLoop.create({
+                    data: {
+                      userId, title, counterpart: counterpart ?? null, direction, dueAt,
+                      sourceKind: sourceEmailId ? "email" : "conversation",
+                      sourceRef: sourceEmailId ?? null,
+                    },
+                  });
+                  await logAction(userId, "loop", created.id, `suivi : ${title}`);
+                  result = { success: true, id: created.id, created: true };
+                }
+              }
+
+            } else if (call.name === "close_loop") {
+              const title = call.input.title as string;
+              const status = (call.input.status as string) ?? "done";
+
+              const openLoops = await prisma.openLoop.findMany({
+                where: { userId, status: "open" },
+                select: { id: true, title: true, counterpart: true },
+              });
+              const match = findMatchingLoop(title, null, openLoops);
+
+              if (!match) {
+                result = { error: "loop not found", open_loops: openLoops.map((l) => l.title) };
+              } else {
+                await prisma.openLoop.update({ where: { id: match.id }, data: { status } });
+                await logAction(userId, "loop_closed", match.id, `${status === "done" ? "fait" : "abandonné"} : ${match.title}`);
+                result = { success: true, id: match.id, status };
+              }
+
+            } else if (call.name === "set_sender_rule") {
+              const pattern = (call.input.sender as string).toLowerCase().trim().replace(/^www\./, "");
+              const action = call.input.action as string;
+
+              await prisma.senderRule.upsert({
+                where: { userId_pattern: { userId, pattern } },
+                update: { action },
+                create: { userId, pattern, action },
+              });
+              await logAction(userId, "sender_rule", null, `règle : ${action} pour ${pattern}`);
+              result = { success: true, pattern, action };
+
             } else {
               result = { error: "Tool not available" };
             }
@@ -741,7 +894,7 @@ export async function runAgentLoop({
           console.log(`[agent] tool ${call.name}:`, JSON.stringify(result).slice(0, 200));
           const toolSuccess = !(typeof result === "object" && result !== null && "error" in result);
           const toolErr = !toolSuccess ? (result as { error: string }).error : undefined;
-          prisma.toolCallLog.create({ data: { userId, tool: call.name, success: toolSuccess, errorMsg: toolErr ?? null } }).catch(() => {});
+          prisma.toolCallLog.create({ data: { userId, tool: call.name, success: toolSuccess, errorMsg: toolErr ?? null } }).catch(() => { });
           return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) };
         })
       );

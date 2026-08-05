@@ -10,6 +10,7 @@
     "postinstall": "node -e \"require('child_process').spawnSync(process.execPath,['node_modules/.bin/prisma','generate'],{stdio:'inherit',env:{...process.env,DATABASE_URL:'file:./dev.db'}})\"",
     "prisma:generate": "node -e \"require('child_process').spawnSync(process.execPath,['node_modules/.bin/prisma','generate'],{stdio:'inherit',env:{...process.env,DATABASE_URL:'file:./dev.db'}})\"",
     "backfill:accounts": "npx tsx scripts/backfill-email-accounts.ts",
+    "purge:profiles": "npx tsx scripts/purge-junk-profiles.ts",
     "test": "npx tsx tests/run-all.ts"
   },
   "dependencies": {

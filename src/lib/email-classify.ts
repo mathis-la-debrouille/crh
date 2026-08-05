@@ -26,7 +26,7 @@ export function extractSenderEmail(from: string): string {
   return (m ? m[1] : from).trim().toLowerCase();
 }
 
-export function classifyOne(email: EmailSummary, knownContactEmails: Set<string>): TriagedEmail {
+function classifyBase(email: EmailSummary, knownContactEmails: Set<string>): TriagedEmail {
   const sender = extractSenderEmail(email.from);
   const localPart = sender.split("@")[0];
   const labels = new Set(email.labelIds);
@@ -61,4 +61,51 @@ export function classifyOne(email: EmailSummary, knownContactEmails: Set<string>
   if (TRANSACTIONAL.test(text))
     return { ...email, category: "transactional", priority: URGENT.test(text) || important ? "high" : "normal" };
   return { ...email, category: "human", priority: URGENT.test(text) || important ? "high" : "normal" };
+}
+
+export type SenderRuleAction = "always_show" | "mute";
+
+// Sender rules are checked first (computed here, before the known-contact check
+// even runs) but applied last: the normal classification always runs so category
+// is unaffected, only priority is overridden — a muted newsletter is still a
+// "newsletter", it just won't surface; an always_show one keeps its category too.
+export function classifyOne(
+  email: EmailSummary,
+  knownContactEmails: Set<string>,
+  rules: Map<string, SenderRuleAction> = new Map(),
+): TriagedEmail {
+  const sender = extractSenderEmail(email.from);
+  const ruleHit = rules.get(sender) ?? rules.get(sender.split("@")[1] ?? "");
+
+  const base = classifyBase(email, knownContactEmails);
+  if (ruleHit === "always_show") return { ...base, priority: "high" };
+  if (ruleHit === "mute") return { ...base, priority: "low" };
+  return base;
+}
+
+// Display name for a sender: the header's display name, falling back to the domain.
+function senderDisplayName(from: string): string {
+  const m = /^"?([^"<]+?)"?\s*<[^>]+>$/.exec(from);
+  const name = m?.[1]?.trim();
+  if (name) return name;
+  const email = (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
+  return email.split("@")[1] ?? email;
+}
+
+// "Upstream ×6, Medium, Twitch" — up to 4 distinct senders, "…" if more.
+export function formatNoiseSenders(noise: TriagedEmail[]): string {
+  const counts = new Map<string, number>();
+  const order: string[] = [];
+  for (const e of noise) {
+    const name = senderDisplayName(e.from);
+    if (!counts.has(name)) order.push(name);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const top = order.slice(0, 4).map((name) => {
+    const n = counts.get(name)!;
+    return n > 1 ? `${name} ×${n}` : name;
+  });
+  let result = top.join(", ");
+  if (order.length > 4) result += "…";
+  return result;
 }

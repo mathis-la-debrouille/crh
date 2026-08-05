@@ -38,7 +38,7 @@ model User {
   // Assistant behavior (user-configurable)
   assistantPaused Boolean @default(false)
   tone            String  @default("formal")
-  register        String  @default("vous")
+  register        String  @default("auto") // "auto" | "tu" | "vous" — auto = detected from recent inbound messages
   language        String  @default("fr")
   signature       String  @default("")
   guardrails      String  @default("[]")
@@ -68,6 +68,8 @@ model User {
   actions       AgentAction[]
   contacts      Contact[]
   emailAccounts EmailAccount[]
+  openLoops     OpenLoop[]
+  senderRules   SenderRule[]
 }
 
 model EmailAccount {
@@ -98,6 +100,36 @@ model EmailAccount {
 
   @@unique([userId, email])
   @@index([userId])
+}
+
+model SenderRule {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  pattern   String   // full email OR domain ("scarfo.com", "jean@x.fr")
+  action    String   // "always_show" | "mute"
+  createdAt DateTime @default(now())
+
+  @@unique([userId, pattern])
+}
+
+model OpenLoop {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  title        String                                  // "CV à envoyer à Hubert"
+  counterpart  String?                                  // "Hubert Guislain"
+  direction    String    @default("owed_by_user")       // "owed_by_user" | "owed_to_user"
+  dueAt        DateTime?
+  sourceKind   String?                                  // "email" | "conversation"
+  sourceRef    String?                                  // email/thread id
+  accountEmail String?
+  status       String    @default("open")               // "open" | "done" | "dropped"
+  nudgedAt     DateTime?                                // set once the >14d-stale hygiene nudge has fired
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId, status])
 }
 
 model AllowedNumber {
